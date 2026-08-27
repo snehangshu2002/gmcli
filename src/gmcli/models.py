@@ -46,7 +46,13 @@ def _headers_to_dict(headers: Iterable[dict[str, str]]) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Attachment:
-    """A non-inline part of a message."""
+    """A part of a message carried as a separate file.
+
+    ``inline`` records that the sender marked the part
+    ``Content-Disposition: inline`` — usually because it is placed in the HTML
+    body by ``cid:``. It is descriptive only: an inline part is still a real
+    file, and is listed and downloaded like any other. See ``_walk_parts``.
+    """
 
     message_id: str
     attachment_id: str
@@ -54,6 +60,8 @@ class Attachment:
     mime_type: str
     size: int
     index: int
+    inline: bool = False
+    content_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +71,7 @@ class Attachment:
             "size": self.size,
             "attachment_id": self.attachment_id,
             "message_id": self.message_id,
+            "inline": self.inline,
         }
 
 
@@ -319,8 +328,13 @@ def _walk_parts(
     """Depth-first walk of the MIME tree.
 
     Collects the first text/plain and text/html bodies plus every part that
-    carries an attachmentId. Inline images referenced by cid: are skipped —
-    they are part of the HTML body, not something the user asked to download.
+    carries an attachmentId *and* a filename.
+
+    Inline parts are included. They used to be skipped, on the theory that a
+    ``cid:``-referenced image is page furniture rather than a file — but Gmail's
+    own composer marks every image you attach as ``inline`` with a
+    ``Content-ID``, so that rule silently dropped ordinary attachments. A part
+    with no filename is still skipped, which is what tracking pixels look like.
 
     A node only claims the text slot if it actually carries data: a container
     can share a ``text/*`` mimeType with an empty body, and letting that win
@@ -338,21 +352,21 @@ def _walk_parts(
         filename = node.get("filename") or ""
 
         if body.get("attachmentId") and filename:
-            headers = _headers_to_dict(node.get("headers", []))
-            disposition = headers.get("content-disposition", "")
-            is_inline = "inline" in disposition.lower() and "content-id" in headers
-            if not is_inline:
-                counter[0] += 1
-                attachments.append(
-                    Attachment(
-                        message_id=message_id,
-                        attachment_id=body["attachmentId"],
-                        filename=filename,
-                        mime_type=node.get("mimeType", "application/octet-stream"),
-                        size=int(body.get("size", 0) or 0),
-                        index=counter[0],
-                    )
+            part_headers = _headers_to_dict(node.get("headers", []))
+            disposition = part_headers.get("content-disposition", "")
+            counter[0] += 1
+            attachments.append(
+                Attachment(
+                    message_id=message_id,
+                    attachment_id=body["attachmentId"],
+                    filename=filename,
+                    mime_type=node.get("mimeType", "application/octet-stream"),
+                    size=int(body.get("size", 0) or 0),
+                    index=counter[0],
+                    inline="inline" in disposition.lower(),
+                    content_id=part_headers.get("content-id", "").strip("<> "),
                 )
+            )
         elif mime == "text/plain" and text is None and not filename and body.get("data"):
             text = _decode(body["data"]).decode("utf-8", errors="replace")
         elif mime == "text/html" and html_body is None and not filename and body.get("data"):

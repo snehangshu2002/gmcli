@@ -32,6 +32,7 @@ MESSAGE_KEYS = {
 LABEL_KEYS = {"id", "name", "type", "messages_total", "messages_unread"}
 ATTACHMENT_KEYS = {
     "index", "filename", "mime_type", "size", "attachment_id", "message_id",
+    "inline",
 }
 
 

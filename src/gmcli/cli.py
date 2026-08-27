@@ -16,6 +16,7 @@ from .commands import cache_cmd
 from .commands import draft as draft_cmd
 from .commands import labels as labels_cmd
 from .commands import listing, modify, read, send
+from .commands import ui_cmd
 from .config import Config
 from .context import AppContext
 from .errors import GmcliError
@@ -24,6 +25,9 @@ app = typer.Typer(
     name="gmail",
     help=(
         "Manage Gmail from the terminal.\n\n"
+        "Run [bold]gmail ui[/bold] for the full-screen interactive mailbox, or "
+        "use the commands below — both do the same things, and both share the "
+        "same #N numbering.\n\n"
         "Listings show a #N column; later commands accept those references "
         "(#3, #1-5, #1,3,7) as well as full ids. Add --json to any command "
         "for machine-readable output.\n\n"
@@ -45,6 +49,7 @@ listing.register(app)
 read.register(app)
 modify.register(app)
 send.register(app)
+ui_cmd.register(app)
 
 
 def _report(exc: GmcliError) -> None:

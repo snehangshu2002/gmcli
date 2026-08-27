@@ -67,17 +67,49 @@ def test_attachments_are_collected_with_indices():
     assert msg.has_attachments
 
 
-def test_inline_images_are_not_treated_as_attachments():
-    """A cid: image belongs to the HTML body, not the download list."""
-    payload = make_message(html="<p>see logo</p>")
+def test_an_inline_image_is_still_an_attachment():
+    """Gmail's own composer marks every image you attach `inline` + cid.
+
+    Skipping those — which gmcli used to do, reasoning that a cid: image is
+    page furniture — silently dropped ordinary attachments: a photo sent from
+    the Gmail web UI arrived as `attachments == []`.
+    """
+    payload = make_message(html='<p>see <img src="cid:photo"></p>')
     payload["payload"]["parts"].append(
         {
             "mimeType": "image/png",
-            "filename": "logo.png",
-            "body": {"attachmentId": "inline1", "size": 100},
+            "filename": "holiday.png",
+            "body": {"attachmentId": "inline1", "size": 4_120_515},
             "headers": [
-                {"name": "Content-Disposition", "value": "inline; filename=logo.png"},
-                {"name": "Content-ID", "value": "<logo>"},
+                {"name": "Content-Disposition", "value": "inline; filename=holiday.png"},
+                {"name": "Content-ID", "value": "<photo>"},
+            ],
+        }
+    )
+    msg = Message.from_api(payload)
+    assert [a.filename for a in msg.attachments] == ["holiday.png"]
+    assert msg.attachments[0].inline is True
+    assert msg.attachments[0].content_id == "photo"
+    assert msg.has_attachments is True
+
+
+def test_an_ordinary_attachment_is_not_marked_inline():
+    msg = Message.from_api(make_message(attachments=[("r.pdf", "application/pdf", 9)]))
+    assert msg.attachments[0].inline is False
+    assert msg.attachments[0].content_id == ""
+
+
+def test_a_part_with_no_filename_is_still_skipped():
+    """What a tracking pixel looks like: a body part, not a file."""
+    payload = make_message(html="<p>hi</p>")
+    payload["payload"]["parts"].append(
+        {
+            "mimeType": "image/gif",
+            "filename": "",
+            "body": {"attachmentId": "pixel", "size": 43},
+            "headers": [
+                {"name": "Content-Disposition", "value": "inline"},
+                {"name": "Content-ID", "value": "<pixel>"},
             ],
         }
     )

@@ -3,6 +3,16 @@
 Manage Gmail from the terminal — read, search, send, and organize mail without
 opening a browser.
 
+Two ways to use it, and you can move between them freely:
+
+- **`gmail ui`** — a full-screen interactive mailbox.
+- **`gmail <command>`** — one-shot commands that pipe, script, and compose.
+
+Neither is the "real" interface. They run on the same code, hold the same
+single OAuth scope, and share the same `#N` numbering, so you can browse in the
+UI, quit, and immediately run `gmail archive '#2'` on the row you were looking
+at.
+
 ```console
 $ gmail ls -n 5
   #    From                      Subject                                   Date
@@ -168,6 +178,119 @@ restricted-scope verification and CASA assessment requirements apply, and the
 
 ## Usage
 
+Everything below has a keystroke in `gmail ui`, and everything in `gmail ui`
+has a command below. Pick whichever suits the moment.
+
+### The interactive mailbox
+
+```console
+$ gmail ui                          # open on the inbox
+$ gmail ui --mailbox finance        # open on a label
+$ gmail ui --search "is:unread has:attachment"
+$ gmail ui -n 200                   # fetch more rows per mailbox
+$ gmail ui --no-mouse               # leave text selection to the terminal
+```
+
+```
+ gmail · you@example.com                  Inbox  12 unread  ·  14:07   ⟳ refresh 
+MAILBOXES           │   #     From             Subject                    Date
+▌Inbox           12 │   1     Dana Ortiz       Q3 numbers, final pass    14:02
+ Unread          12 │   2     GitHub           [gmcli] PR #12            13:11
+ Starred            │ ✓ 3 ★📎  Priya Raman      Re: contract redlines     11:40
+ Sent               │   4     AWS Billing      Your invoice is available Mar 03
+ Drafts           2 │   5     Sam Iyer         lunch thursday?           Mar 01
+ All Mail           │
+ Trash              │
+ ── LABELS ─────────│
+ clients/acme       │
+ finance          3 │
+5 conversations
+ j/k move  ↵ open  x mark  a archive  s star  u unread  L label  / search  ⟳ refresh
+```
+
+The time in the header is when the list was last loaded, so you can see at a
+glance how stale it is. **⟳ refresh** in the top right re-fetches the mailbox
+and the unread counts; `Ctrl-R` and `.` do the same from the keyboard.
+
+Keyboard-driven throughout, and the mouse works too — click, double-click,
+right-click, scroll, and the key bar along the bottom is clickable.
+
+| Key | Does |
+|---|---|
+| `j` `k` `↓` `↑` | move; `g`/`G` jump to the ends, `Ctrl-D`/`Ctrl-U` page |
+| `Tab` | switch between the sidebar and the list |
+| `Enter` | open the conversation (and mark it read, as a mail client does) |
+| `x` | mark a row — actions then apply to every marked row; `v` clears |
+| `a` / `A` | archive / move back to the inbox |
+| `s` / `u` | toggle star / toggle read |
+| `L` | add a label; prefix with `-` to remove one |
+| `d` | move to Trash, after a confirmation |
+| `w` | download attachments |
+| `c` / `r` / `R` / `f` | compose / reply / reply-all / forward, via `$EDITOR` |
+| `/` | search with Gmail's own query syntax |
+| `t` | switch between conversations and individual messages |
+| `n` | change how many rows to fetch |
+| `Ctrl-R` or `.` | fetch the latest mail — or click **⟳ refresh** in the top right |
+| `i` | view an image attachment inline |
+| `M` | turn mouse reporting off |
+| `?` | the full key reference |
+| `q` `Esc` | back, or quit from the list |
+
+Anything that sends mail opens `$EDITOR` and then asks for a `y` before it
+goes. Nothing in the UI can delete mail — same scope, same guarantee.
+
+#### The mouse
+
+- **Click** a row to select it, or a sidebar entry to switch mailbox.
+- **Double-click** a row to open the conversation.
+- **Right-click** a row to mark it.
+- **Scroll** with the wheel — the list, the reader, and the key reference.
+- **Click the bar along the bottom**: those key hints are buttons.
+
+Mouse reporting takes click-drag away from your terminal's own text selection.
+`M` toggles it, and `gmail ui --no-mouse` starts without it. (In Ghostty and
+most others, holding Shift while dragging bypasses it either way.)
+
+#### Images
+
+On a terminal that can draw them, `i` shows an image attachment inline —
+attachments that are images are marked 🖼 in the reader.
+
+This includes images attached through Gmail's own composer, which arrive as
+`Content-Disposition: inline` with a `Content-ID`. They are ordinary
+attachments and are listed, downloaded, and viewed like any other; parts with
+no filename at all — tracking pixels — are still skipped. `--json` reports an
+`inline` flag on each attachment if you need to tell them apart.
+
+Large images are resampled down to roughly the cells they will occupy before
+being transmitted, when Pillow is available: a 4 MB photo goes over the wire as
+about 500 KB rather than 5.5 MB of base64. Without Pillow a large PNG is still
+sent, just unshrunk.
+
+| Terminal | How |
+|---|---|
+| Ghostty, Kitty, WezTerm, Konsole | Kitty graphics protocol |
+| iTerm2 | iTerm2 inline images |
+| anything truecolor | half-block `▀` cells, with Pillow installed |
+
+PNG attachments display with no extra dependency at all — the Kitty protocol
+takes PNG bytes as they are. Other formats (JPEG, GIF, WebP) need decoding
+first:
+
+```console
+$ pipx install 'gmcli[images]'      # or: pip install 'gmcli[images]'
+```
+
+Detection is by environment variable, which a multiplexer can hide. Override it
+with `GMCLI_IMAGE_PROTOCOL=kitty|iterm2|blocks|none`, or turn the whole thing
+off with `gmail ui --no-images`.
+
+#### Links
+
+URLs in a message body are emitted as OSC 8 hyperlinks, so Ghostty, Kitty,
+WezTerm, iTerm2 and modern VTE terminals make them clickable — no need to
+select and copy the address out of the pane.
+
 ### Reading
 
 ```console
@@ -213,6 +336,14 @@ $ gmail mark read '#1,3,7'                    # a selection
 
 Quote them so your shell does not treat `#` as a comment. Full ids always work
 too, so scripts never depend on this state.
+
+`gmail ui` writes the rows it shows to the same place, so the numbering carries
+across the two interfaces in both directions:
+
+```console
+$ gmail ui                                    # browse, quit on the finance label
+$ gmail label add '#1-3' --label triage       # act on what was just on screen
+```
 
 ### Sending
 
@@ -283,7 +414,9 @@ collisions get a numeric suffix rather than overwriting.
 
 ## Scripting
 
-Add `--json` to any command. The JSON document goes to stdout; every human
+Add `--json` to any command. (`gmail ui` is the one exception — it is
+interactive and has no JSON form; it will tell you so and point at
+`gmail ls --json`.) The JSON document goes to stdout; every human
 message, warning, and progress line goes to stderr, so pipes stay clean:
 
 ```console
