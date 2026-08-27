@@ -160,12 +160,12 @@ def ctx(service) -> AppContext:
     return app_ctx
 
 
-def build(ctx: AppContext, keys: list[str]) -> MailApp:
+def build(ctx: AppContext, keys: list[str], limit: int = 50) -> MailApp:
     """A UI whose keystrokes are already queued, loaded but not yet run."""
     console = Console(
         file=io.StringIO(), width=100, height=30, force_terminal=True, color_system=None
     )
-    ui = MailApp(ctx, console=console, keys=ScriptedKeys(keys))
+    ui = MailApp(ctx, console=console, keys=ScriptedKeys(keys), limit=limit)
     ui.load_mailboxes()
     ui.reload()
     return ui
@@ -455,6 +455,154 @@ def test_the_fetch_limit_is_editable(ctx, service):
     assert ui.state.limit == 7
     assert 7 in [kw.get("maxResults") for path, kw in service.calls
                  if path == "users.threads.list"]
+
+
+# -- paging -------------------------------------------------------------------
+#
+# `limit` is the size of one window onto the mailbox, not a ceiling on what the
+# UI can reach. Gmail hands back a token for the window after the one it just
+# returned; these are the guard that the token is actually kept and followed,
+# because without it a fifty-row fetch silently *is* the mailbox.
+
+
+@pytest.fixture
+def paged_service(service) -> FakeService:
+    """Three pages of three conversations, chained by page token."""
+    pages = {
+        None: ("token-b", [f"a{i:015x}" for i in range(1, 4)]),
+        "token-b": ("token-c", [f"b{i:015x}" for i in range(1, 4)]),
+        "token-c": (None, [f"c{i:015x}" for i in range(1, 4)]),
+    }
+
+    def listing(kwargs):
+        next_token, ids = pages[kwargs.get("pageToken")]
+        page = {"threads": [{"id": t} for t in ids]}
+        if next_token:
+            page["nextPageToken"] = next_token
+        return page
+
+    service.handlers["users.threads.list"] = listing
+    return service
+
+
+def first_ids(ui: MailApp) -> list[str]:
+    return [row.id for row in ui.state.rows]
+
+
+def test_the_next_page_key_fetches_mail_the_first_fetch_never_saw(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    assert all(i.startswith("a") for i in first_ids(ui))
+    assert ui.state.has_more
+
+    press(ui, "]")
+    assert all(i.startswith("b") for i in first_ids(ui))
+    assert ui.state.page == 2
+    assert "token-b" in [kw.get("pageToken") for path, kw in paged_service.calls
+                         if path == "users.threads.list"]
+
+
+def test_the_previous_page_key_comes_back(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "]", "]")
+    assert ui.state.page == 3
+    press(ui, "[")
+    assert ui.state.page == 2
+    assert all(i.startswith("b") for i in first_ids(ui))
+    press(ui, "[")
+    assert ui.state.page == 1
+    assert all(i.startswith("a") for i in first_ids(ui))
+
+
+def test_paging_past_the_end_says_so_rather_than_refetching(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "]", "]")
+    assert not ui.state.has_more
+    before = len(paged_service.calls)
+    press(ui, "]")
+    assert ui.state.page == 3
+    assert len(paged_service.calls) == before
+    assert "Nothing after" in ui.state.status
+
+
+def test_the_first_page_is_the_first_page(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "[")
+    assert ui.state.page == 1
+    assert "first page" in ui.state.status
+
+
+def test_a_paged_listing_is_still_what_the_cli_numbers(ctx, paged_service):
+    """`#1` after paging means the row on screen, not the row two pages back."""
+    ui = build(ctx, [], limit=3)
+    press(ui, "]")
+    kind, ids = ctx.cache.get_listing()
+    assert kind == "thread"
+    assert ids == first_ids(ui)
+
+
+def test_the_page_is_announced_and_offers_the_way_on(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    assert "] for the next page" in ui.state.status
+    press(ui, "]")
+    assert "page 2" in ui.state.status
+    body = screen(ui)
+    assert "page 2" in body        # the header
+    assert "]/[ page" in body      # the key bar
+
+
+def test_the_page_controls_stay_out_of_the_way_when_there_is_one_page(ctx):
+    ui = build(ctx, [])
+    assert not ui.state.has_more
+    body = screen(ui)
+    assert "page 1" not in body
+    assert "]/[" not in body
+
+
+def test_a_search_starts_again_from_the_first_page(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "]")
+    press(ui, "/")
+    for char in "from:dana":
+        ui.dispatch(char)
+    press(ui, "enter")
+    assert ui.state.page == 1
+    assert ui.state.page_stack == []
+    q_calls = [kw for path, kw in paged_service.calls if path == "users.threads.list"]
+    assert q_calls[-1].get("pageToken") is None
+
+
+def test_changing_the_page_size_starts_again_too(ctx, paged_service):
+    """A token collected at one page size does not point anywhere at another."""
+    ui = build(ctx, [], limit=3)
+    press(ui, "]")
+    press(ui, "n", "ctrl-u")
+    for char in "2":
+        ui.dispatch(char)
+    press(ui, "enter")
+    assert ui.state.limit == 2
+    assert ui.state.page == 1
+
+
+def test_switching_mailbox_starts_again_from_the_first_page(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "]")
+    press(ui, "tab", "j", "enter")
+    assert ui.state.page == 1
+
+
+def test_refresh_stays_on_the_page_you_are_reading(ctx, paged_service):
+    ui = build(ctx, [], limit=3)
+    press(ui, "]")
+    press(ui, "ctrl-r")
+    assert ui.state.page == 2
+    assert all(i.startswith("b") for i in first_ids(ui))
+
+
+def test_the_page_keys_are_documented(ctx):
+    ui = build(ctx, [])
+    press(ui, "?")
+    body = screen(ui)
+    assert "next page" in body
 
 
 # -- help ---------------------------------------------------------------------
@@ -1146,3 +1294,211 @@ def test_such_a_message_can_have_its_attachments_downloaded(ctx, service_with_in
     press(ui, "enter")
     assert (tmp_path / "gmail_images20260828_035406.png").exists()
     assert "Saved 1" in ui.state.status
+
+
+# -- saving attachments -------------------------------------------------------
+#
+# Anything Gmail lists as an attachment can be written to disk — a PDF, an
+# archive, an image the sender pasted into the composer. What changed is that
+# a conversation carrying several of them lets you say which, instead of
+# offering "all or nothing".
+
+
+@pytest.fixture
+def service_with_files(service) -> FakeService:
+    import base64
+
+    service.handlers["users.threads.get"] = lambda kw: {
+        "id": kw["id"], "snippet": "s",
+        "messages": [make_message(
+            f"m{kw['id']}", thread_id=kw["id"],
+            attachments=[
+                ("invoice.pdf", "application/pdf", 4096),
+                ("chart.png", "image/png", 2048),
+                ("notes.txt", "text/plain", 64),
+            ],
+        )],
+    }
+    service.handlers["users.messages.attachments.get"] = lambda kw: {
+        "data": base64.urlsafe_b64encode(b"file bytes").decode().rstrip("=")
+    }
+    return service
+
+
+def type_in(ui: MailApp, text: str) -> None:
+    """Clear the pre-filled default and type ``text`` into the footer prompt."""
+    press(ui, "ctrl-u")
+    for char in text:
+        ui.dispatch(char)
+    press(ui, "enter")
+
+
+def test_several_attachments_ask_which_one_before_asking_where(ctx, service_with_files):
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    assert ui.state.prompt is not None
+    assert "save which [1-3" in ui.state.prompt.label
+    assert "invoice.pdf" in ui.state.status
+
+
+def test_one_attachment_can_be_saved_on_its_own(ctx, service_with_files, tmp_path):
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    type_in(ui, "1")                       # the PDF
+    assert "invoice.pdf" in ui.state.prompt.label
+    type_in(ui, str(tmp_path))
+    assert (tmp_path / "invoice.pdf").read_bytes() == b"file bytes"
+    assert not (tmp_path / "chart.png").exists()
+    assert "Saved 1" in ui.state.status
+
+
+def test_every_attachment_can_be_saved_into_one_folder(ctx, service_with_files, tmp_path):
+    into = tmp_path / "saved"  # a folder that does not exist yet
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    type_in(ui, "a")
+    type_in(ui, str(into))
+    assert sorted(f.name for f in into.iterdir()) == [
+        "chart.png", "invoice.pdf", "notes.txt"
+    ]
+    assert "Saved 3" in ui.state.status
+
+
+def test_a_subset_can_be_named_the_way_hash_refs_are(ctx, service_with_files, tmp_path):
+    ui = build(ctx, [])
+    into = tmp_path / "saved"
+    press(ui, "enter", "w")
+    type_in(ui, "1,3")
+    type_in(ui, str(into))
+    assert sorted(f.name for f in into.iterdir()) == ["invoice.pdf", "notes.txt"]
+
+
+def test_the_folder_is_remembered_for_the_next_save(ctx, service_with_files, tmp_path):
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    type_in(ui, "1")
+    type_in(ui, str(tmp_path))
+    press(ui, "w")
+    type_in(ui, "2")
+    assert ui.state.prompt.text == str(tmp_path)
+
+
+def test_a_selector_that_matches_nothing_reports_instead_of_saving(ctx, service_with_files):
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    type_in(ui, "nope")
+    assert ui.state.prompt is None
+    assert ui.state.status_style == render.THEME["error"]
+
+
+def test_saving_works_from_the_list_without_opening_anything(ctx, service_with_files, tmp_path):
+    ui = build(ctx, [])
+    press(ui, "w")
+    type_in(ui, "a")
+    type_in(ui, str(tmp_path))
+    assert (tmp_path / "invoice.pdf").exists()
+
+
+def test_a_failing_lookup_reports_instead_of_taking_the_ui_down(ctx, service):
+    """`busy` swallows the failure, so what follows must not run regardless."""
+    ui = build(ctx, [])
+
+    def boom(kwargs):
+        raise RuntimeError("gmail is having a day")
+
+    service.handlers["users.threads.get"] = boom
+    press(ui, "w")
+    assert ui.state.prompt is None
+    assert ui.state.status_style == render.THEME["error"]
+    assert ui.state.quit is False
+
+
+def test_a_conversation_with_nothing_attached_says_so(ctx):
+    ui = build(ctx, [])
+    press(ui, "enter", "w")
+    assert ui.state.prompt is None
+    assert "No attachments" in ui.state.status
+
+
+def test_the_reader_says_attachments_can_be_saved(ctx, service_with_files):
+    ui = build(ctx, [])
+    press(ui, "enter")
+    body = screen(ui)
+    assert "invoice.pdf" in body and "application/pdf" in body
+    assert "w to save" in body
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("a", [1, 2, 3]),
+        ("all", [1, 2, 3]),
+        ("", [1, 2, 3]),
+        ("2", [2]),
+        ("3,1", [1, 3]),          # listed order, not typed order
+        ("1-2", [1, 2]),
+        ("2 3", [2, 3]),
+        ("1,1,2", [1, 2]),        # never twice
+        ("9", []),
+        ("x", []),
+    ],
+)
+def test_the_attachment_selector_parses_the_shapes_hash_refs_use(text, expected):
+    from gmcli.models import Attachment
+    from gmcli.ui.app import _select_attachments
+
+    items = [
+        Attachment(message_id="m", attachment_id=f"a{i}", filename=f"f{i}",
+                   mime_type="text/plain", size=1, index=i)
+        for i in (1, 2, 3)
+    ]
+    assert [a.index for a in _select_attachments(items, text)] == expected
+
+
+# -- the reader states its own contrast ---------------------------------------
+
+
+def styles_on(line) -> set[str]:
+    return {str(span.style) for span in line.spans} | {str(line.style)}
+
+
+def test_the_message_body_names_a_foreground_of_its_own(ctx):
+    """Inheriting the terminal's default text colour is what made it unreadable.
+
+    A body line must carry both halves of its contrast: the reader's own
+    background, and an explicit foreground over it.
+    """
+    ui = build(ctx, [])
+    press(ui, "enter")
+    lines, _ = render.reader_lines(ui.state, 100)
+    body = next(line for line in lines if "Visible body." in line.plain)
+    assert render.THEME["body"] in styles_on(body)
+    assert render.THEME["page"] in styles_on(body)
+
+
+def test_the_gutter_does_not_bleed_its_colour_into_the_text(ctx):
+    """The spine is a foreground span, never a base style over the whole line."""
+    ui = build(ctx, [])
+    press(ui, "enter")
+    lines, _ = render.reader_lines(ui.state, 100)
+    body = next(line for line in lines if "Visible body." in line.plain)
+    assert str(body.style) == render.THEME["page"]  # background only
+    assert render.THEME["rule"] not in {
+        str(span.style) for span in body.spans if span.start > 3
+    }
+
+
+def test_quoted_history_is_dimmer_but_still_has_a_colour(ctx):
+    ui = build(ctx, [])
+    press(ui, "enter", "Q")
+    lines, _ = render.reader_lines(ui.state, 100)
+    quoted = next(line for line in lines if "older text" in line.plain)
+    assert render.THEME["quote"] in styles_on(quoted)
+
+
+def test_the_reader_surface_reaches_the_right_hand_edge(ctx):
+    """Including the rows below a short message — no half-painted page."""
+    ui = build(ctx, [])
+    press(ui, "enter")
+    for line in render.reader(ui.state, 100, 25):
+        assert str(render.exact(line, 100).style) == render.THEME["page"]

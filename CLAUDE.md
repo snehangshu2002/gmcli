@@ -171,6 +171,15 @@ Five modules, and the split is load-bearing:
   `app.py` also calls `console.clear()` once when Live starts, for the same
   class of host.
 
+  The reader is the one pane that states **both halves of its contrast**:
+  `page` is a background-only style and `body` an explicit foreground over it,
+  applied in `_hang` and `_message_block`. Everywhere else inherits the
+  terminal's own foreground, which is fine for a row of chrome — but a message
+  body inheriting it came out as whatever washed-out grey the terminal used
+  for default text, which is unreadable on a good share of themes. Do not drop
+  either half back to "inherit", and keep `page` background-only: a base style
+  carrying a foreground reaches every span appended after it.
+
   `THEME` is the whole palette, and two of its entries carry rules. `accent`
   (brass) is the only warm colour on screen and means exactly one thing —
   mail that wants something from you, or a key you can press; spending it on
@@ -216,6 +225,18 @@ Three things to preserve when editing it:
   UI get the identical `In-Reply-To`/`References`/`threadId` handling as
   `gmail reply`, covered by `tests/test_compose.py`.
 
+**`limit` is a page size, not a ceiling.** `reload(keep_page=...)` drives the
+whole listing pane. `api/client.py:paginate_page()` returns the items *and*
+Gmail's `nextPageToken`; `list_thread_ids_page`/`list_message_ids_page` pass it
+through, and `UIState` keeps the token that fetched the current page plus a
+`page_stack` of the ones behind it — the API has no "previous page", so the
+stack is the only way back. `]`/`[` move; everything that changes *what* is
+listed (a new mailbox, a new search, a new page size) must leave `keep_page`
+false, because a token means nothing in a different listing. Refresh is the
+one caller that keeps it: re-fetching page three should not silently return
+you to page one. `paginate()` is now `paginate_page()` with the token dropped,
+so the CLI's one-shot listings are unchanged.
+
 `refresh_counts()` runs at startup as well as on refresh: `labels.list` carries
 no unread counts — only `labels.get` does — so the sidebar would come up blank
 without it. It is one batched round trip.
@@ -223,6 +244,13 @@ without it. It is one batched round trip.
 `gmail ui` refuses to start under `--json` or without a tty, and says which.
 `--no-mouse` and `--no-images` turn off the two things that depend on terminal
 capabilities rather than on Gmail.
+
+Attachment saving (`w`) prompts twice only when there is a choice to make: a
+conversation with one attachment asks just for the folder, several ask which
+first. `_select_attachments` accepts the same shapes `idref` does — `2`,
+`1,3`, `2-4`, `a` — so "pick some of the numbered things on screen" is spelled
+one way throughout gmcli. Nothing in the path is image- or PDF-specific;
+`api/attachments.py` owns the filename safety rules for all of it.
 
 Note the one intentional divergence from the CLI: opening a conversation in the
 UI marks it read, because that is what a mail client does and what the user

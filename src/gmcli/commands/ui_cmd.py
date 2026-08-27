@@ -22,7 +22,11 @@ def register(app: typer.Typer) -> None:
     def ui_cmd(
         ctx: typer.Context,
         limit: int = typer.Option(
-            50, "--limit", "-n", help="How many conversations to fetch per mailbox."
+            50,
+            "--limit",
+            "-n",
+            help="How many conversations to fetch per page. ] and [ page "
+            "through the rest of the mailbox.",
         ),
         mailbox: str = typer.Option(
             None, "--mailbox", "-l", help="Open on this label instead of the inbox."
@@ -56,7 +60,12 @@ def register(app: typer.Typer) -> None:
         terminal kept its own text selection.
 
         On a terminal that draws images — Ghostty, Kitty, WezTerm, iTerm2 — `i`
-        shows an image attachment inline.
+        shows an image attachment inline. `w` saves attachments — any one of
+        them, a subset, or all of them into a folder.
+
+        --limit is the size of one page, not a ceiling: ] and [ walk forward
+        and back through the whole mailbox, and / filters it with Gmail's own
+        query syntax.
         """
         app_ctx: AppContext = ctx.obj
 

@@ -83,6 +83,15 @@ class UIState:
     query: str | None = None  # set when the pane is showing search results
     limit: int = 50
 
+    # Paging. ``limit`` is the size of one window onto the mailbox, not the
+    # size of the mailbox: Gmail hands back a token for the window after the
+    # one it just returned, so ``]`` walks forward through mail the first
+    # fetch never saw. ``page_stack`` holds the token that fetched each
+    # earlier page, which is the only way back — the API has no "previous".
+    page_token: str | None = None
+    next_token: str | None = None
+    page_stack: list[str | None] = field(default_factory=list)
+
     # The reading pane.
     thread: Thread | None = None
     reader_offset: int = 0
@@ -114,6 +123,21 @@ class UIState:
         if not rows:
             return None
         return rows[min(self.cursor, len(rows) - 1)]
+
+    @property
+    def page(self) -> int:
+        """Which window onto the mailbox is showing, counting from one."""
+        return len(self.page_stack) + 1
+
+    @property
+    def has_more(self) -> bool:
+        return self.next_token is not None
+
+    def reset_paging(self) -> None:
+        """Back to the first page — for a new mailbox, search, or page size."""
+        self.page_token = None
+        self.next_token = None
+        self.page_stack.clear()
 
     @property
     def mailbox(self) -> Mailbox:

@@ -43,6 +43,12 @@ from . import graphics, render
 from .keys import KeyReader, LineEditor, Mouse
 from .state import HELP, LIST, READER, UIState, build_mailboxes
 
+class _Outcome:
+    """Whether the block inside :meth:`MailApp.busy` got all the way through."""
+
+    ok = True
+
+
 # Keys that mean "go back / get out", in every view.
 BACK_KEYS = {"q", "escape", "h", "left"}
 
@@ -79,6 +85,10 @@ class MailApp:
         # What to run when the footer prompt is submitted.
         self._on_submit: Callable[[str], None] | None = None
         self._last_click: tuple[int, float] = (-1, 0.0)
+        # Where `w` saves, remembered across a session, and what it is about
+        # to save once the folder prompt comes back.
+        self._download_dir: Path = Path.home() / "Downloads"
+        self._pending_download: list[Attachment] = []
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -120,17 +130,27 @@ class MailApp:
             self.live.update(frame, refresh=True)
 
     @contextmanager
-    def busy(self, message: str) -> Iterator[None]:
-        """Show a status while a blocking call runs, and report failures."""
+    def busy(self, message: str) -> Iterator["_Outcome"]:
+        """Show a status while a blocking call runs, and report failures.
+
+        The yielded outcome says whether the block got all the way through.
+        Callers that carry on afterwards need it: the failure is swallowed
+        here so one bad response cannot kill the UI, which means the code
+        after the block would otherwise run on half-built state and overwrite
+        the error on the status line with something misleading.
+        """
         previous, previous_style = self.state.status, self.state.status_style
+        outcome = _Outcome()
         self.state.note(f"{message}…", render.THEME["meta"])
         self.draw()
         try:
-            yield
+            yield outcome
         except GmcliError as exc:
+            outcome.ok = False
             detail = f"{exc.message} {exc.hint or ''}".strip()
             self.state.note(detail, render.THEME["error"])
         except Exception as exc:  # noqa: BLE001 — a UI must not die on one bad call
+            outcome.ok = False
             self.state.note(f"{type(exc).__name__}: {exc}", render.THEME["error"])
         else:
             if self.state.status == f"{message}…":
@@ -166,7 +186,9 @@ class MailApp:
 
     def refresh(self) -> None:
         """Re-fetch the current mailbox and the unread counts behind it."""
-        self.reload()
+        # Re-fetching the page you are standing on, not the first one: a
+        # refresh means "is this still current", not "take me back to the top".
+        self.reload(keep_page=True)
         self.refresh_counts()
         if self.state.status_style != render.THEME["error"]:
             when = self.state.last_refresh
@@ -188,43 +210,94 @@ class MailApp:
                 lb.id: lb.messages_unread or 0 for lb in details
             }
 
-    def reload(self) -> None:
-        """Fetch the current mailbox (or search) and record it for ``#N``."""
+    def reload(self, *, keep_page: bool = False) -> None:
+        """Fetch the current mailbox (or search) and record it for ``#N``.
+
+        ``keep_page`` fetches the window ``state.page_token`` points at rather
+        than the newest one. Everything that changes *what* is being listed —
+        a different mailbox, a new search, a new page size — leaves it false,
+        because a token from the previous listing does not mean anything in
+        the new one.
+        """
         state = self.state
+        if not keep_page:
+            state.reset_paging()
         box = state.mailbox
         label_ids = list(box.label_ids) or None
         query = state.query if state.query is not None else box.query
 
         with self.busy(f"Loading {box.title if state.query is None else 'results'}"):
             if state.as_messages:
-                ids = messages_api.list_message_ids(
+                ids, next_token = messages_api.list_message_ids_page(
                     self.ctx.client,
                     query=query,
                     label_ids=label_ids,
                     limit=state.limit,
                     include_spam_trash=box.include_spam_trash,
+                    page_token=state.page_token,
                 )
                 state.messages = messages_api.get_messages_metadata(self.ctx.client, ids)
                 state.threads = []
                 self.ctx.cache.set_listing("message", [m.id for m in state.messages])
             else:
-                ids = threads_api.list_thread_ids(
+                ids, next_token = threads_api.list_thread_ids_page(
                     self.ctx.client,
                     query=query,
                     label_ids=label_ids,
                     limit=state.limit,
                     include_spam_trash=box.include_spam_trash,
+                    page_token=state.page_token,
                 )
                 state.threads = threads_api.get_threads_metadata(self.ctx.client, ids)
                 state.messages = []
                 self.ctx.cache.set_listing("thread", [t.id for t in state.threads])
 
+            state.next_token = next_token
             state.cursor = min(state.cursor, max(0, len(state.rows) - 1))
             state.selected.clear()
             state.last_refresh = datetime.now()
-            noun = "message" if state.as_messages else "conversation"
-            count = len(state.rows)
-            state.note(f"{count} {noun}{'' if count == 1 else 's'}")
+            state.note(self._listing_summary())
+
+    def _listing_summary(self) -> str:
+        """What the status line says after a fetch.
+
+        It names the page and says there is more, because "50 conversations"
+        on its own reads as "this mailbox holds fifty" — which was exactly the
+        wrong impression before ``]`` existed.
+        """
+        state = self.state
+        noun = "message" if state.as_messages else "conversation"
+        count = len(state.rows)
+        parts = [f"{count} {noun}{'' if count == 1 else 's'}"]
+        if state.page > 1:
+            parts.append(f"page {state.page}")
+        if state.has_more:
+            parts.append("] for the next page")
+        elif state.page > 1:
+            parts.append("[ to go back")
+        return "  ·  ".join(parts)
+
+    # -- paging --------------------------------------------------------------
+
+    def next_page(self) -> None:
+        """The window after this one, using the token Gmail handed back."""
+        state = self.state
+        if not state.has_more:
+            state.note("Nothing after this page", render.THEME["warn"])
+            return
+        state.page_stack.append(state.page_token)
+        state.page_token = state.next_token
+        state.cursor = 0
+        self.reload(keep_page=True)
+
+    def previous_page(self) -> None:
+        state = self.state
+        if not state.page_stack:
+            state.note("Already on the first page")
+            return
+        state.page_token = state.page_stack.pop()
+        state.cursor = 0
+        self.reload(keep_page=True)
 
     # -- dispatch ------------------------------------------------------------
 
@@ -422,7 +495,11 @@ class MailApp:
             state.as_messages = not state.as_messages
             self.reload()
         elif key == "n":
-            self.ask("fetch how many: ", self._do_limit, str(state.limit))
+            self.ask("fetch how many per page: ", self._do_limit, str(state.limit))
+        elif key in ("]", ">"):
+            self.next_page()
+        elif key in ("[", "<"):
+            self.previous_page()
         elif key in ("ctrl-r", "."):
             self.refresh()
         elif key == "?":
@@ -461,6 +538,8 @@ class MailApp:
             self.state.note(f"Not a number: {text!r}", render.THEME["error"])
             return
         self.state.limit = max(1, min(value, 500))
+        self.state.cursor = 0
+        # A page size change invalidates every token collected at the old one.
         self.reload()
 
     # -- reader view ---------------------------------------------------------
@@ -725,16 +804,64 @@ class MailApp:
     # -- attachments ---------------------------------------------------------
 
     def prompt_download(self) -> None:
-        self.ask("save attachments to: ", self._do_download, str(Path.home() / "Downloads"))
+        """Save attachments: any one of them, a subset, or the lot.
+
+        Two prompts rather than one, and only when there is a choice to make.
+        A conversation with a single attachment asks just for the folder — the
+        common case stays one keystroke and one Enter — while one carrying a
+        PDF, a spreadsheet and four images lets you say which, because
+        "download everything or nothing" is not a real answer there.
+
+        Nothing here is image- or PDF-specific: whatever Gmail lists as an
+        attachment can be written to disk, under the filename rules in
+        ``api/attachments.py``.
+        """
+        # Bound before the block, not inside it: `busy` swallows the failure
+        # of the fetch below, and a name that only exists on the happy path
+        # would take the whole UI down on the next line.
+        items: list[Attachment] = []
+        with self.busy("Looking for attachments") as fetch:
+            items = self._attachments_here()
+        if not fetch.ok:
+            return  # the reason is already on the status line
+        if not items:
+            self.state.note("No attachments here", render.THEME["warn"])
+            return
+        if len(items) == 1:
+            self._ask_folder(items)
+            return
+
+        self.state.note("  ".join(f"[{a.index}] {a.filename}" for a in items))
+
+        def chosen(text: str) -> None:
+            picked = _select_attachments(items, text)
+            if not picked:
+                self.state.note(f"Nothing matched {text!r}", render.THEME["error"])
+                return
+            self._ask_folder(picked)
+
+        self.ask(f"save which [1-{len(items)}, a=all]: ", chosen, "a")
+
+    def _ask_folder(self, items: Sequence[Attachment]) -> None:
+        self._pending_download = list(items)
+        what = (
+            items[0].filename
+            if len(items) == 1
+            else f"{len(items)} files"
+        )
+        self.ask(f"save {what} to folder: ", self._do_download,
+                 str(self._download_dir))
 
     def _do_download(self, text: str) -> None:
+        items, self._pending_download = self._pending_download, []
+        if not items:
+            return
         target = Path(text or ".").expanduser()
-        with self.busy("Downloading"):
-            items = self._attachments_here()
-            if not items:
-                self.state.note("No attachments here", render.THEME["warn"])
-                return
+        with self.busy(f"Saving {len(items)} file{'' if len(items) == 1 else 's'}"):
             written = attachments_api.download(self.ctx.client, items, target)
+            # Remembered for the rest of the session, so saving a second
+            # attachment somewhere is one Enter rather than a retyped path.
+            self._download_dir = target
             names = ", ".join(path.name for _, path in written[:3])
             more = "" if len(written) <= 3 else f" (+{len(written) - 3} more)"
             self.state.note(
@@ -776,12 +903,14 @@ class MailApp:
             return
 
         found: list[Attachment] = []
-        with self.busy("Looking for images"):
+        with self.busy("Looking for images") as fetch:
             found = [
                 att
                 for att in self._attachments_here()
                 if graphics.is_image(att.mime_type, att.filename)
             ]
+        if not fetch.ok:
+            return
         if not found:
             self.state.note("No images here", render.THEME["warn"])
             return
@@ -968,6 +1097,40 @@ class MailApp:
             self.ask("subject: ", with_subject)
 
         self.ask("to: ", with_recipients)
+
+
+def _select_attachments(
+    items: Sequence[Attachment], text: str
+) -> list[Attachment]:
+    """Which attachments ``1,3`` / ``2-4`` / ``a`` names, in listed order.
+
+    The same shapes ``idref`` accepts for ``#1,3,7``, so "pick some of the
+    numbered things on screen" is spelled one way everywhere in gmcli.
+    """
+    choice = (text or "").strip().lower()
+    if choice in ("", "a", "all", "*"):
+        return list(items)
+
+    by_index = {att.index: att for att in items}
+    wanted: list[int] = []
+    for part in choice.replace(" ", ",").split(","):
+        if not part:
+            continue
+        if "-" in part[1:]:
+            start, _, end = part.partition("-")
+            try:
+                span = range(int(start), int(end) + 1)
+            except ValueError:
+                return []
+            wanted.extend(span)
+        else:
+            try:
+                wanted.append(int(part))
+            except ValueError:
+                return []
+    # Listed order, never the order they were typed, and never twice.
+    picked = {n for n in wanted if n in by_index}
+    return [att for att in items if att.index in picked]
 
 
 def _header_stub(to: Sequence[str], cc: Sequence[str], subject: str) -> str:

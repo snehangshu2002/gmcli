@@ -187,7 +187,7 @@ has a command below. Pick whichever suits the moment.
 $ gmail ui                          # open on the inbox
 $ gmail ui --mailbox finance        # open on a label
 $ gmail ui --search "is:unread has:attachment"
-$ gmail ui -n 200                   # fetch more rows per mailbox
+$ gmail ui -n 200                   # fetch 200 rows per page instead of 50
 $ gmail ui --no-mouse               # leave text selection to the terminal
 ```
 
@@ -205,8 +205,8 @@ MAILBOXES             ▏    #     FROM         SUBJECT                         
  LABELS ───────────── ▏
  clients/acme         ▏
  finance            3 ▏
- · 5 conversations
- j/k move  ↵ open  x mark  a archive  s star  u unread  L label  c compose  / search
+ · 5 conversations  ·  ] for the next page
+ j/k move  ↵ open  / search  ]/[ page  x mark  a archive  s star  u unread  L label
 ```
 
 `●` is unread, `★` starred, `▣` carries an attachment, and `✓` is a row you
@@ -230,11 +230,12 @@ right-click, scroll, and the key bar along the bottom is clickable.
 | `s` / `u` | toggle star / toggle read |
 | `L` | add a label; prefix with `-` to remove one |
 | `d` | move to Trash, after a confirmation |
-| `w` | download attachments |
+| `w` | save attachments — one of them, `1,3` / `2-4`, or `a` for all |
 | `c` / `r` / `R` / `f` | compose / reply / reply-all / forward, via `$EDITOR` |
-| `/` | search with Gmail's own query syntax |
+| `/` | search with Gmail's own query syntax; `Esc` clears it again |
+| `]` `[` | next / previous page — mail past the rows already fetched |
 | `t` | switch between conversations and individual messages |
-| `n` | change how many rows to fetch |
+| `n` | change the page size — how many rows to fetch at a time |
 | `Ctrl-R` or `.` | fetch the latest mail — or click **⟳ refresh** in the top right |
 | `i` | view an image attachment inline |
 | `M` | turn mouse reporting off |
@@ -243,6 +244,42 @@ right-click, scroll, and the key bar along the bottom is clickable.
 
 Anything that sends mail opens `$EDITOR` and then asks for a `y` before it
 goes. Nothing in the UI can delete mail — same scope, same guarantee.
+
+#### Getting at more than the first screenful
+
+`-n` is the size of one **page**, not a ceiling on what the UI can reach. The
+inbox is fetched fifty conversations at a time; `]` asks Gmail for the next
+fifty and `[` comes back, so you can walk the whole mailbox without loading it
+all at once. The header shows which page you are on as soon as there is more
+than one, and the status line says when there is a page after this one.
+
+Three ways at the same mailbox, and they compose:
+
+- the **sidebar** filters by mailbox or label — Inbox, Unread, Starred, Sent,
+  Drafts, All Mail, Trash, Spam, then every label you have made;
+- **`/`** filters by query, using Gmail's own syntax exactly as `gmail search`
+  does — `from:dana`, `has:attachment`, `newer_than:7d`, `is:unread`,
+  `larger:5M`, or any combination. Search aliases from your config work here
+  too. `Esc` drops the search and puts the mailbox back;
+- **`]`** walks further back through whatever the first two left you with.
+
+Raising `-n` and paging do different things: `-n 200` makes each fetch bigger
+(and slower); `]` keeps fetches small and moves the window.
+
+#### Saving attachments
+
+`w` saves attachments from the open conversation — or from the row under the
+cursor, without opening it. Anything Gmail lists as an attachment can be
+saved: PDFs, spreadsheets, archives, images, including images the sender
+pasted into Gmail's own composer.
+
+With one attachment it asks only where to put it. With several it asks which
+first — a single number, `1,3`, `2-4`, or `a` for all of them, the same shapes
+`#N` references take. The folder is created if it does not exist, is
+remembered for the rest of the session, and an existing file is never
+overwritten: a second `invoice.pdf` lands as `invoice (1).pdf`.
+
+`gmail attachments download` does the same thing from a script.
 
 #### The mouse
 
@@ -259,7 +296,7 @@ most others, holding Shift while dragging bypasses it either way.)
 #### Images
 
 On a terminal that can draw them, `i` shows an image attachment inline —
-attachments that are images are marked 🖼 in the reader.
+attachments that are images are marked `▨` in the reader.
 
 This includes images attached through Gmail's own composer, which arrive as
 `Content-Disposition: inline` with a `Content-ID`. They are ordinary
