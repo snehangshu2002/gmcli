@@ -53,7 +53,17 @@ THEME = {
     "cursor_idle": "on #20232b",
     "unread": "bold",
     "read": "",
-    "meta": "#7c7a73",
+    "meta": "#8f8c84",
+    # The reader is the one place that states both halves of its contrast.
+    # Everywhere else inherits the terminal's own foreground, which is fine
+    # for a row of chrome — but a message body is the thing you are actually
+    # here to read, and inheriting left it at whatever washed-out grey the
+    # terminal happened to use for default text. ``page`` is a background and
+    # ``body`` a foreground, so the pair is legible whatever the terminal is
+    # themed as, instead of only on the themes that happened to work.
+    "page": "on #15171d",
+    "body": "#e8e5de",
+    "quote": "#a8a49a",
     "accent": "#e0a85c",
     "sender": "#93b8cc",
     "star": "#e0a85c",
@@ -169,6 +179,10 @@ def header(state: UIState, width: int) -> Text:
         right.append(state.mailbox.title, style="bold")
     if state.as_messages:
         right.append(f"  {DOT} messages", style=THEME["meta"])
+    if state.view == LIST and (state.page > 1 or state.has_more):
+        # Only once there is more than one page. On a mailbox that fits in a
+        # single fetch this would be a permanent "page 1 of 1".
+        right.append(f"  {DOT} page {state.page}", style=THEME["accent"])
     unread = state.unread_counts.get(state.mailbox.counter or "", 0)
     if unread:
         right.append(f"  {unread} unread", style=THEME["accent"])
@@ -229,12 +243,20 @@ def _keys_for(state: UIState) -> list[tuple[str, str, str]]:
             ("i", "image", "i"), ("w", "save", "w"), ("Q", "quoted", "Q"),
             ("⟳", "refresh", "ctrl-r"), ("q", "back", "q"), ("?", "help", "?"),
         ]
-    return [
-        ("j/k", "move", "j"), ("↵", "open", "enter"), ("x", "mark", "x"),
-        ("a", "archive", "a"), ("s", "star", "s"), ("u", "unread", "u"),
-        ("L", "label", "L"), ("c", "compose", "c"), ("/", "search", "/"),
+    # `/` and `]` sit early: search and paging are how you reach mail that is
+    # not in the first fetch, and a hint the bar has no room for is a feature
+    # nobody finds. Ordering costs nothing and the tail is what gets cut.
+    hints = [
+        ("j/k", "move", "j"), ("↵", "open", "enter"), ("/", "search", "/"),
+    ]
+    if state.has_more or state.page > 1:
+        hints.append(("]/[", "page", "]"))
+    hints += [
+        ("x", "mark", "x"), ("a", "archive", "a"), ("s", "star", "s"),
+        ("u", "unread", "u"), ("L", "label", "L"), ("c", "compose", "c"),
         ("⟳", "refresh", "ctrl-r"), ("?", "help", "?"), ("q", "quit", "q"),
     ]
+    return hints
 
 
 # Two cells between hints, and no separator glyph. A dim interpunct reads
@@ -493,11 +515,15 @@ def reader_lines(state: UIState, width: int) -> tuple[list[Text], list[int]]:
 def _hang(glyph: str, line: Text) -> Text:
     """Hang one content line off the gutter.
 
-    The gutter is appended into a bare ``Text`` rather than being its base
-    style: a base style reaches everything appended after it, which would
-    render the message body in hairline grey.
+    The gutter and the spine are appended as foreground spans over a
+    *background-only* base style — the same trick the header uses. A base
+    style carrying a foreground would reach everything appended after it,
+    which is how the message body once came out in hairline grey; a base
+    style carrying only a background reaches the padding ``exact`` adds and
+    nothing else, so the reader is one continuous surface out to the right
+    edge and every span keeps its own colour.
     """
-    out = Text()
+    out = Text(style=THEME["page"])
     out.append(f" {glyph} ",
                style=THEME["accent"] if glyph == NODE else THEME["rule"])
     return out.append_text(line)
@@ -564,7 +590,7 @@ def _message_block(
     msg: Message, width: int, *, show_quoted: bool, position: int, total: int
 ) -> list[Text]:
     lines: list[Text] = []
-    lines.extend(_wrap(msg.subject, width, "bold"))
+    lines.extend(_wrap(msg.subject, width, f"bold {THEME['body']}"))
     lines.append(_byline(msg, width))
     for label, value in (("to", msg.to), ("cc", msg.cc)):
         if value:
@@ -580,10 +606,13 @@ def _message_block(
         lines.append(Text("(no readable text body)", style=THEME["meta"]))
     else:
         visible, quoted = split_quoted(body)
-        lines.extend(_wrap(visible, width))
+        lines.extend(_wrap(visible, width, THEME["body"]))
         if quoted:
             if show_quoted:
-                lines.extend(_wrap(quoted, width, THEME["meta"]))
+                # Dimmer than the live text, but still a readable weight —
+                # quoted history is context you sometimes need to read, not
+                # decoration.
+                lines.extend(_wrap(quoted, width, THEME["quote"]))
             else:
                 count = len(quoted.splitlines())
                 lines.append(Text(""))
@@ -596,13 +625,21 @@ def _message_block(
 
     if msg.attachments:
         lines.append(Text(""))
-        lines.append(Text("ATTACHMENTS", style=THEME["meta"]))
+        head = Text()
+        head.append("ATTACHMENTS", style=THEME["meta"])
+        # The keys go beside the thing they act on. Every attachment can be
+        # written to disk — PDFs, archives, whatever — and `w` is the only way
+        # to find that out without opening the key reference.
+        head.append(f"  {DOT}  ", style=THEME["rule"])
+        head.append("w", style=THEME["accent"])
+        head.append(" to save", style=THEME["meta"])
+        lines.append(head)
         for att in msg.attachments:
             image = is_image(att.mime_type, att.filename)
             entry = Text()
             entry.append(f"{PICTURE if image else CLIP} ", style=THEME["accent"])
             entry.append(f"[{att.index}] ", style=THEME["meta"])
-            entry.append(att.filename)
+            entry.append(att.filename, style=THEME["body"])
             entry.append(f"  {att.mime_type} {DOT} {format_size(att.size)}",
                          style=THEME["meta"])
             if image:
@@ -615,7 +652,12 @@ def _message_block(
 def reader(state: UIState, width: int, height: int) -> list[Text]:
     lines, _ = reader_lines(state, width)
     top = max(0, min(state.reader_offset, max(0, len(lines) - height)))
-    return _pad(list(lines[top : top + height]), height, width)
+    visible = list(lines[top : top + height])
+    # Blank rows below a short message are part of the page, not a hole in it.
+    visible.extend(
+        Text(style=THEME["page"]) for _ in range(height - len(visible))
+    )
+    return visible[:height]
 
 
 # -- help ---------------------------------------------------------------------
@@ -630,9 +672,12 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("q / Esc", "back, or quit from the list"),
     )),
     ("Finding", (
-        ("/", "search with Gmail's own query syntax"),
+        ("/", "search with Gmail's own query syntax — from:, has:attachment,"),
+        ("", "newer_than:7d, is:unread, label:… ; Esc clears it again"),
+        ("]  or  >", "next page — mail past the ones already fetched"),
+        ("[  or  <", "previous page"),
         ("t", "toggle conversations ↔ individual messages"),
-        ("n", "limit: how many to fetch"),
+        ("n", "page size: how many to fetch at a time (up to 500)"),
         ("Ctrl-R  or  .", "fetch the latest mail — or click ⟳ in the top right"),
     )),
     ("Mouse", (
@@ -651,7 +696,7 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("u", "toggle read ↔ unread"),
         ("L", "add a label — prefix with '-' to remove one"),
         ("d", "move to Trash (confirmed; recoverable for 30 days)"),
-        ("w", "download attachments"),
+        ("w", "save attachments — one of them, 1,3 / 2-4, or a for all"),
         ("i", "view an image attachment inline"),
     )),
     ("Writing", (
@@ -672,6 +717,8 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("", "pip install 'gmcli[images]'. URLs in a body are clickable."),
         ("", "opening a conversation marks it read, as a mail client does;"),
         ("", "press u to put it back."),
+        ("", "the sidebar, / and ] are three ways at the same mailbox: a"),
+        ("", "mailbox filters, a search queries, a page walks further back."),
         ("", "the rows here are the same #1, #2, #3 the CLI uses, so you can"),
         ("", "quit and run  gmail archive '#2'  on what you were just looking at."),
         ("", "gmcli holds the gmail.modify scope: it can never delete mail."),

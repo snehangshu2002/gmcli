@@ -271,8 +271,31 @@ class GmailClient:
         Gmail caps maxResults at 500 per page; we also never ask for more than
         we still need, so ``-n 5`` costs one small request.
         """
+        items, _ = self.paginate_page(
+            method, limit=limit, items_key=items_key, **kwargs
+        )
+        return items
+
+    def paginate_page(
+        self,
+        method: Any,
+        *,
+        limit: int | None,
+        items_key: str,
+        page_token: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """One window of ``limit`` items, plus the token for the window after it.
+
+        ``paginate`` is this with the token thrown away, which is all a
+        one-shot listing needs. Handing it back is what lets a caller walk
+        past its own limit: the UI keeps the token so ``]`` shows the *next*
+        fifty conversations instead of re-fetching the same fifty with a
+        bigger limit — which is what asking Gmail again from the start costs.
+
+        ``page_token`` resumes from a token an earlier call returned.
+        """
         collected: list[dict[str, Any]] = []
-        page_token: str | None = None
 
         while True:
             params = dict(kwargs)
@@ -290,7 +313,9 @@ class GmailClient:
             if not page_token:
                 break
 
-        return collected[:limit] if limit is not None else collected
+        if limit is not None:
+            collected = collected[:limit]
+        return collected, page_token
 
 
 def _chunks(items: list[Any], size: int) -> Iterable[list[Any]]:

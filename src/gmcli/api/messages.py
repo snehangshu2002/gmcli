@@ -21,19 +21,40 @@ def list_message_ids(
     limit: int | None = 20,
     include_spam_trash: bool = False,
 ) -> list[str]:
+    ids, _ = list_message_ids_page(
+        client,
+        query=query,
+        label_ids=label_ids,
+        limit=limit,
+        include_spam_trash=include_spam_trash,
+    )
+    return ids
+
+
+def list_message_ids_page(
+    client: GmailClient,
+    *,
+    query: str | None = None,
+    label_ids: Sequence[str] | None = None,
+    limit: int | None = 20,
+    include_spam_trash: bool = False,
+    page_token: str | None = None,
+) -> tuple[list[str], str | None]:
+    """One page of ids, plus the token that fetches the page after it."""
     params: dict[str, Any] = {"includeSpamTrash": include_spam_trash}
     if query:
         params["q"] = query
     if label_ids:
         params["labelIds"] = list(label_ids)
 
-    items = client.paginate(
+    items, next_token = client.paginate_page(
         client.service.users().messages().list,
         limit=limit,
         items_key="messages",
+        page_token=page_token,
         **params,
     )
-    return [item["id"] for item in items]
+    return [item["id"] for item in items], next_token
 
 
 def get_messages_metadata(
