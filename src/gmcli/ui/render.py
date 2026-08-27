@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from email.utils import parseaddr
 
 from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group, RenderableType
@@ -34,28 +35,48 @@ COUNT_WIDTH = 4
 SIDEBAR_MIN_WIDTH = 70
 
 # One place for the colours, so the whole UI shifts together.
+#
+# The palette is deliberately narrow. Chrome sits close to the terminal's own
+# background and everything structural is drawn in ``meta``/``rule`` grey, so
+# ``accent`` — brass — is the only warm colour on screen and always means the
+# same thing: mail that wants something from you. Unread counts, unread dots,
+# the mailbox you are in, the keys you can press. Nothing decorative gets it.
+#
+# ``cursor`` sets a background and no foreground on purpose: the row under the
+# cursor keeps its own colour coding instead of being flattened to white, and
+# the brass bar in the first column carries the signal on terminals where the
+# tint is too subtle to see.
 THEME = {
-    "bar": "bold white on dark_blue",
-    "button": "bold black on cyan",
-    "cursor": "bold white on grey30",
-    "cursor_idle": "on grey19",
+    "bar": "on #1c1f26",
+    "button": "#e0a85c on #2a2e38",
+    "cursor": "on #2a2e38",
+    "cursor_idle": "on #20232b",
     "unread": "bold",
     "read": "",
-    "meta": "dim",
-    "accent": "cyan",
-    "star": "yellow",
-    "mark": "green",
-    "rule": "dim",
-    "error": "bold red",
-    "ok": "green",
-    "warn": "yellow",
+    "meta": "#7c7a73",
+    "accent": "#e0a85c",
+    "sender": "#93b8cc",
+    "star": "#e0a85c",
+    "mark": "#8fb08a",
+    "rule": "#4a4e58",
+    "error": "bold #c2726a",
+    "ok": "#8fb08a",
+    "warn": "#e0a85c",
 }
 
 REFRESH = " ⟳ refresh "
+# A narrow geometric family, so nothing in a row is double-width and the grid
+# never drifts. Emoji were the previous choice and cost two cells apiece.
 STAR = "★"
-CLIP = "\U0001f4ce"
-PICTURE = "\U0001f5bc"
-CURSOR = "▌"
+UNREAD = "●"
+CLIP = "▣"
+PICTURE = "▨"
+TICK = "✓"
+CURSOR = "▎"          # the active row / mailbox marker
+DIVIDER = "▏"         # the hairline between the two panes
+SPINE = "│"           # the thread spine down the reader's gutter
+NODE = "◆"            # one message hung off it
+DOT = "·"
 
 
 def _fit(text: str, width: int) -> str:
@@ -124,40 +145,77 @@ def refresh_span(width: int) -> tuple[int, int]:
 
 
 def header(state: UIState, width: int) -> Text:
-    left = f" gmail · {state.account}"
-    right = state.mailbox.title
+    """The chrome strip: who you are on the left, where you are on the right.
+
+    Built from foreground-only spans over a background-only base style, so
+    ``exact`` can pad the bar out to the terminal edge and the padding still
+    carries the bar.
+    """
+    start, _ = refresh_span(width)
+
+    left = Text(style=THEME["bar"])
+    left.append(f" {CURSOR}", style=THEME["accent"])
+    left.append("gmail", style=f"bold {THEME['accent']}")
+    left.append(f"  {state.account}", style=THEME["meta"])
+
+    right = Text(style=THEME["bar"])
+    # Carried on the right-hand block so it survives the left being ellipsised
+    # into it on a narrow terminal.
+    right.append("  ")
     if state.query:
-        right = f"search: {state.query}"
+        right.append("search ", style=THEME["meta"])
+        right.append(state.query, style="bold")
+    else:
+        right.append(state.mailbox.title, style="bold")
     if state.as_messages:
-        right += "  [messages]"
+        right.append(f"  {DOT} messages", style=THEME["meta"])
     unread = state.unread_counts.get(state.mailbox.counter or "", 0)
     if unread:
-        right += f"  {unread} unread"
+        right.append(f"  {unread} unread", style=THEME["accent"])
     if state.last_refresh:
-        right += f"  ·  {state.last_refresh.strftime('%H:%M')}"
+        right.append(f"  {DOT} {state.last_refresh.strftime('%H:%M')}",
+                     style=THEME["meta"])
+    right.append(" ")
 
-    start, _ = refresh_span(width)
-    gap = start - cell_len(left) - cell_len(right) - 1
-    if gap < 1:
-        line = Text(_fit(left, start), style=THEME["bar"])
-    else:
-        line = Text(f"{left}{' ' * gap}{right} ", style=THEME["bar"])
-        line.truncate(start, overflow="crop", pad=True)
+    # The right-hand side is laid out first and the left is given whatever
+    # is left over. On a narrow terminal that costs you the account name
+    # rather than the mailbox you are standing in — which of the two you need
+    # to see at a glance is not a close call.
+    line = Text(style=THEME["bar"])
+    line.append_text(left)
+    line.truncate(max(start - cell_len(right.plain), 0),
+                  overflow="ellipsis", pad=True)
+    line.append_text(right)
+    line.truncate(start, overflow="crop", pad=True)
     line.append(REFRESH, style=THEME["button"])
     return line
+
+
+# What each status style leads with, so a result reads at a glance without
+# depending on the terminal reproducing the colour faithfully.
+_STATUS_GLYPH = {
+    THEME["error"]: ("✗", THEME["error"]),
+    THEME["ok"]: ("✓", THEME["ok"]),
+    THEME["warn"]: ("!", THEME["warn"]),
+}
 
 
 def status_line(state: UIState, width: int) -> Text:
     if state.prompt is not None:
         editor = state.prompt
-        line = Text(" ")
-        line.append(editor.label, style=THEME["accent"])
+        line = Text(f" {CURSOR}", style=THEME["accent"])
+        line.append(f"{editor.label}", style=f"bold {THEME['accent']}")
         line.append(editor.text)
         # A block where the caret is, since the real cursor lives elsewhere.
         caret = editor.text[editor.cursor] if editor.cursor < len(editor.text) else " "
         line.append(caret, style="reverse")
         return line
-    return Text(_fit(f" {state.status}", width), style=state.status_style)
+    if not state.status:
+        return _blank(width)
+    glyph, glyph_style = _STATUS_GLYPH.get(state.status_style, (DOT, THEME["meta"]))
+    line = Text(f" {glyph} ", style=glyph_style)
+    line.append(_fit(state.status, max(width - 3, 1)), style=state.status_style)
+    return line
 
 
 def _keys_for(state: UIState) -> list[tuple[str, str, str]]:
@@ -179,26 +237,43 @@ def _keys_for(state: UIState) -> list[tuple[str, str, str]]:
     ]
 
 
-def key_hint_spans(state: UIState, width: int) -> list[tuple[int, int, str]]:
-    """``(start, end, key)`` for each hint, so the footer can be clicked."""
-    spans: list[tuple[int, int, str]] = []
+# Two cells between hints, and no separator glyph. A dim interpunct reads
+# better but costs a third cell each time, and at eighty columns that is the
+# difference between the bar showing "refresh / help / quit" and cutting them
+# off. The brass-on-ash contrast already separates one hint from the next.
+_HINT_GAP = "  "
+
+
+def _hint_layout(state: UIState, width: int) -> list[tuple[int, int, str, str, str]]:
+    """``(start, end, label, meaning, key)`` for every hint that fits.
+
+    The single source of truth for the footer. ``key_hints`` draws from it and
+    ``key_hint_spans`` clicks from it, so a click can never land on a hint the
+    frame did not draw.
+    """
+    out: list[tuple[int, int, str, str, str]] = []
     column = 1
     for label, meaning, key in _keys_for(state):
-        entry = f"{label} {meaning}  "
-        if column + cell_len(entry) > width:
+        span = cell_len(label) + 1 + cell_len(meaning)
+        if column + span > width:
             break
-        spans.append((column, column + cell_len(f"{label} {meaning}"), key))
-        column += cell_len(entry)
-    return spans
+        out.append((column, column + span, label, meaning, key))
+        column += span + cell_len(_HINT_GAP)
+    return out
+
+
+def key_hint_spans(state: UIState, width: int) -> list[tuple[int, int, str]]:
+    """``(start, end, key)`` for each hint, so the footer can be clicked."""
+    return [(start, end, key) for start, end, _, _, key in _hint_layout(state, width)]
 
 
 def key_hints(state: UIState, width: int) -> Text:
     line = Text(" ")
-    for label, meaning, _ in _keys_for(state):
-        if cell_len(line.plain) + cell_len(label) + cell_len(meaning) + 3 > width:
-            break
-        line.append(label, style=THEME["accent"])
-        line.append(f" {meaning}  ", style=THEME["meta"])
+    for position, (_, _, label, meaning, _) in enumerate(_hint_layout(state, width)):
+        if position:
+            line.append(_HINT_GAP)
+        line.append(label, style=f"bold {THEME['accent']}")
+        line.append(f" {meaning}", style=THEME["meta"])
     if cell_len(line.plain) < width:
         line.append(" " * (width - cell_len(line.plain)))
     return line
@@ -230,23 +305,30 @@ def sidebar(state: UIState, width: int, height: int) -> list[Text]:
             lines.append(Text(_fit(f" {payload}", width), style=THEME["meta"]))
             continue
         if kind == "rule":
-            label = f" ── {payload} "
-            lines.append(
-                Text(label + "─" * max(width - cell_len(label), 0), style=THEME["rule"])
-            )
+            line = Text(" ")
+            line.append(str(payload), style=THEME["meta"])
+            line.append(" ")
+            line.append("─" * max(width - cell_len(line.plain) - 1, 0),
+                        style=THEME["rule"])
+            line.append(" ")
+            lines.append(line)
             continue
 
         index, box = payload  # type: ignore[misc]
         count = state.unread_counts.get(box.counter or "", 0)
-        marker = CURSOR if index == state.mailbox_index else " "
-        line = Text(_fit(f"{marker}{box.title}", width - COUNT_WIDTH - 1))
+        here = index == state.mailbox_index
+        line = Text()
+        line.append(CURSOR if here else " ", style=THEME["accent"] if here else "")
+        line.append(
+            _fit(box.title, width - COUNT_WIDTH - 2),
+            style=f"bold {THEME['accent']}" if here else ("bold" if count else ""),
+        )
         line.append(_rfit(str(count) if count else "", COUNT_WIDTH),
                     style=THEME["accent"] if count else "")
         line.append(" ")
-        if index == state.mailbox_index:
+        if here:
+            # Background only — the row keeps its own colours underneath.
             line.stylize(THEME["cursor"] if active else THEME["cursor_idle"])
-        elif count:
-            line.stylize("bold")
         lines.append(line)
     return _pad(lines, height, width)
 
@@ -255,10 +337,52 @@ def sidebar(state: UIState, width: int, height: int) -> list[Text]:
 
 
 def _row_columns(width: int) -> tuple[int, int, int, int, int]:
-    """Widths for mark, index, flags, sender, date — subject takes the rest."""
-    date = 10 if width >= 70 else 6
+    """Widths for mark, index, flags, sender, date — subject takes the rest.
+
+    ``mark`` is two cells: the cursor bar, then the selection tick, so a row
+    can be both the one under the cursor and one of several marked for an
+    action without either signal displacing the other.
+    """
+    date = 10 if width >= 70 else 8
     sender = 22 if width >= 90 else (16 if width >= 70 else 12)
-    return 1, 3, 3, sender, date
+    return 2, 3, 3, sender, date
+
+
+# ``format_date`` compresses to a bare time today and to "Mar 05" this year,
+# but mail older than that keeps a full YYYY-MM-DD. Cropping that to the narrow
+# tier's column gives "2026-0", which is worse than useless — drop the century
+# and it fits whole.
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _date_cell(date, width: int) -> str:
+    stamp = format_date(date)
+    if cell_len(stamp) > width and _ISO_DATE.match(stamp):
+        stamp = stamp[2:]
+    return _rfit(stamp, width)
+
+
+def _subject_cell(row, width: int, unread: bool) -> Text:
+    """Subject, then as much of the snippet as the rest of the column allows.
+
+    Gmail's own snippet is the cheapest triage signal there is — it already
+    arrives with the metadata fetch — and a subject alone rarely fills the
+    column. Always exactly ``width`` cells.
+    """
+    weight = THEME["unread"] if unread else THEME["read"]
+    subject = " ".join((row.subject or "").split())
+    snippet = " ".join((getattr(row, "snippet", "") or "").split())
+    used = cell_len(subject)
+    room = width - used - 2
+    cell = Text()
+    # Under a dozen cells a snippet is noise, not a preview. Show it or don't.
+    if not snippet or room < 12:
+        cell.append(_fit(subject, width), style=weight)
+        return cell
+    cell.append(subject, style=weight)
+    cell.append("  ")
+    cell.append(_fit(snippet, room), style=THEME["meta"])
+    return cell
 
 
 def listing(state: UIState, width: int, height: int) -> list[Text]:
@@ -267,7 +391,7 @@ def listing(state: UIState, width: int, height: int) -> list[Text]:
 
     head = Text(
         f"{' ' * mark_w}{_rfit('#', idx_w)} {' ' * flag_w} "
-        f"{_fit('From', from_w)} {_fit('Subject', subject_w)} {_rfit('Date', date_w)}",
+        f"{_fit('FROM', from_w)} {_fit('SUBJECT', subject_w)} {_rfit('DATE', date_w)}",
         style=THEME["meta"],
     )
     rows = state.rows
@@ -287,7 +411,7 @@ def listing(state: UIState, width: int, height: int) -> list[Text]:
         index = top + offset
         unread = row.is_unread
         marked = row.id in state.selected
-        flags = (STAR if row.is_starred else " ") + (CLIP if row.has_attachments else " ")
+        here = index == state.cursor
 
         if isinstance(row, Thread):
             who = ", ".join(row.participants) or "(unknown)"
@@ -297,18 +421,25 @@ def listing(state: UIState, width: int, height: int) -> list[Text]:
             who = row.sender_name or "(unknown)"
 
         line = Text()
-        line.append("✓" if marked else " ", style=THEME["mark"])
+        line.append(CURSOR if here else " ", style=THEME["accent"] if here else "")
+        line.append(TICK if marked else " ", style=THEME["mark"])
         line.append(_rfit(str(index + 1), idx_w), style=THEME["meta"])
         line.append(" ")
-        line.append(_fit(flags, flag_w), style=THEME["star"] if row.is_starred else THEME["meta"])
+        line.append(UNREAD if unread else " ", style=THEME["accent"])
+        line.append(STAR if row.is_starred else " ", style=THEME["star"])
+        line.append(CLIP if row.has_attachments else " ", style=THEME["meta"])
         line.append(" ")
-        line.append(_fit(who, from_w), style=THEME["unread"] if unread else "")
+        line.append(
+            _fit(who, from_w),
+            style=f"bold {THEME['sender']}" if unread else THEME["sender"],
+        )
         line.append(" ")
-        line.append(_fit(row.subject, subject_w), style=THEME["unread"] if unread else "")
+        line.append_text(_subject_cell(row, subject_w, unread))
         line.append(" ")
-        line.append(_rfit(format_date(row.date), date_w), style=THEME["meta"])
+        line.append(_date_cell(row.date, date_w), style=THEME["meta"])
 
-        if index == state.cursor:
+        if here:
+            # Background only, so the flags and the sender keep their colour.
             line.stylize(THEME["cursor"] if active else THEME["cursor_idle"])
         lines.append(line)
 
@@ -317,29 +448,59 @@ def listing(state: UIState, width: int, height: int) -> list[Text]:
 
 # -- reader -------------------------------------------------------------------
 
+# Three cells of gutter down the left of the reader — a cell of margin off
+# the terminal edge, the spine, and a cell of air before the text.
+GUTTER = 3
+
 
 def reader_lines(state: UIState, width: int) -> tuple[list[Text], list[int]]:
     """Flatten the open conversation into wrapped lines, plus message offsets.
 
     The offsets are what ``n``/``p`` jump between, so navigating a twelve-message
     thread does not mean holding a scroll key.
+
+    Every line carries a two-cell gutter. In a conversation of more than one
+    message that gutter is the *spine*: a hairline running the height of the
+    thread with a node at each message, so twelve messages read as one chain
+    rather than as twelve slabs divided by rules. A single-message thread has
+    no chain to draw, so its gutter is blank — the device only appears where
+    there is something for it to say.
     """
     thread = state.thread
     if thread is None:
         return [], []
 
+    content = max(width - GUTTER, 10)
+    chained = len(thread.messages) > 1
     lines: list[Text] = []
     starts: list[int] = []
 
     for position, msg in enumerate(thread.messages):
         if position:
-            lines.append(Text(""))
-            lines.append(Text("─" * width, style=THEME["rule"]))
-            lines.append(Text(""))
+            lines.append(_hang(SPINE if chained else " ", Text("")))
         starts.append(len(lines))
-        lines.extend(_message_block(msg, width, show_quoted=state.show_quoted,
-                                    position=position, total=len(thread.messages)))
+        block = _message_block(msg, content, show_quoted=state.show_quoted,
+                               position=position, total=len(thread.messages))
+        for offset, line in enumerate(block):
+            if not chained:
+                glyph = " "
+            else:
+                glyph = NODE if offset == 0 else SPINE
+            lines.append(_hang(glyph, line))
     return lines, starts
+
+
+def _hang(glyph: str, line: Text) -> Text:
+    """Hang one content line off the gutter.
+
+    The gutter is appended into a bare ``Text`` rather than being its base
+    style: a base style reaches everything appended after it, which would
+    render the message body in hairline grey.
+    """
+    out = Text()
+    out.append(f" {glyph} ",
+               style=THEME["accent"] if glyph == NODE else THEME["rule"])
+    return out.append_text(line)
 
 
 # Deliberately conservative: trailing punctuation is far more often sentence
@@ -376,28 +537,42 @@ def _wrap(text: str, width: int, style: str = "") -> list[Text]:
 _MEASURE = Console(width=200, no_color=True)
 
 
+def _byline(msg: Message, width: int) -> Text:
+    """Who sent it, from what address, and when — on one line.
+
+    Replaces the ``From:`` / ``Date:`` label stack. The labels were four cells
+    of chrome apiece restating what the shape of the value already says.
+    """
+    name, address = parseaddr(msg.sender)
+    line = Text()
+    line.append(name or address or msg.sender or "(unknown)",
+                style=f"bold {THEME['sender']}")
+    if name and address:
+        line.append(f"  {address}", style=THEME["meta"])
+    if msg.date:
+        stamp = msg.date.astimezone().strftime("%d %b %Y %H:%M %Z").strip()
+        line.append(f"  {DOT}  {stamp}", style=THEME["meta"])
+    if msg.is_starred:
+        line.append(f"  {STAR}", style=THEME["star"])
+    if msg.is_unread:
+        line.append(f"  {UNREAD}", style=THEME["accent"])
+    line.truncate(width, overflow="ellipsis")
+    return line
+
+
 def _message_block(
     msg: Message, width: int, *, show_quoted: bool, position: int, total: int
 ) -> list[Text]:
     lines: list[Text] = []
-    counter = f"[{position + 1}/{total}] " if total > 1 else ""
-    lines.extend(_wrap(f"{counter}{msg.subject}", width, "bold"))
-    for label, value in (
-        ("From", msg.sender), ("To", msg.to), ("Cc", msg.cc),
-    ):
+    lines.extend(_wrap(msg.subject, width, "bold"))
+    lines.append(_byline(msg, width))
+    for label, value in (("to", msg.to), ("cc", msg.cc)):
         if value:
-            head = Text(f"{label}: ", style=THEME["meta"])
-            head.append(_fit(value, max(width - len(label) - 2, 8)))
+            head = Text()
+            head.append(f"{label} ", style=THEME["meta"])
+            head.append(_fit(value, max(width - len(label) - 1, 8)),
+                        style=THEME["meta"])
             lines.append(head)
-    if msg.date:
-        lines.append(
-            Text(f"Date: {msg.date.astimezone().strftime('%Y-%m-%d %H:%M %Z')}",
-                 style=THEME["meta"])
-        )
-    if msg.is_unread or msg.is_starred:
-        tags = " ".join(t for t in ("unread" if msg.is_unread else "",
-                                    "starred" if msg.is_starred else "") if t)
-        lines.append(Text(tags, style=THEME["warn"]))
     lines.append(Text(""))
 
     body = msg.body_text or (html_to_text(msg.body_html) if msg.body_html else None)
@@ -412,19 +587,27 @@ def _message_block(
             else:
                 count = len(quoted.splitlines())
                 lines.append(Text(""))
-                lines.append(
-                    Text(f"… {count} quoted line{'s' if count != 1 else ''} hidden "
-                         "(Q to expand)", style=THEME["meta"])
-                )
+                fold = Text()
+                # A disclosure triangle, because that is what it is.
+                fold.append("▸ ", style=THEME["accent"])
+                fold.append(f"{count} quoted line{'s' if count != 1 else ''}"
+                            f" {DOT} Q to expand", style=THEME["meta"])
+                lines.append(fold)
 
     if msg.attachments:
         lines.append(Text(""))
+        lines.append(Text("ATTACHMENTS", style=THEME["meta"]))
         for att in msg.attachments:
-            glyph = PICTURE if is_image(att.mime_type, att.filename) else CLIP
-            entry = Text(f"{glyph} [{att.index}] {att.filename}", style=THEME["accent"])
-            entry.append(f"  {att.mime_type}, {format_size(att.size)}", style=THEME["meta"])
-            if glyph == PICTURE:
-                entry.append("  i to view", style=THEME["meta"])
+            image = is_image(att.mime_type, att.filename)
+            entry = Text()
+            entry.append(f"{PICTURE if image else CLIP} ", style=THEME["accent"])
+            entry.append(f"[{att.index}] ", style=THEME["meta"])
+            entry.append(att.filename)
+            entry.append(f"  {att.mime_type} {DOT} {format_size(att.size)}",
+                         style=THEME["meta"])
+            if image:
+                entry.append("  i to view", style=THEME["accent"])
+            entry.truncate(width, overflow="ellipsis")
             lines.append(entry)
     return lines
 
@@ -477,6 +660,12 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ("f", "forward"),
         ("", "each opens $EDITOR and confirms before anything is sent"),
     )),
+    ("Reading the list", (
+        (UNREAD, "unread"),
+        (STAR, "starred"),
+        (CLIP, "has an attachment"),
+        (TICK, "marked — the next action applies to it"),
+    )),
     ("Notes", (
         ("", "images need a terminal that draws them — Ghostty, Kitty,"),
         ("", "WezTerm, iTerm2. PNG works as-is; other formats want"),
@@ -493,11 +682,14 @@ HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
 def help_lines(width: int) -> list[Text]:
     lines: list[Text] = [Text("")]
     for title, items in HELP_SECTIONS:
-        lines.append(Text(f"  {title}", style="bold"))
+        head = Text("  ")
+        head.append(title.upper(), style=f"bold {THEME['accent']}")
+        lines.append(head)
         for key, description in items:
             row = Text("    ")
             row.append(_fit(key, 18), style=THEME["accent"] if key else "")
-            row.append(_fit(description, max(width - 24, 10)), style=THEME["meta"] if not key else "")
+            row.append(_fit(description, max(width - 24, 10)),
+                       style=THEME["meta"] if not key else "")
             lines.append(row)
         lines.append(Text(""))
     return lines
@@ -604,8 +796,9 @@ def frame(state: UIState, width: int, height: int) -> RenderableType:
     if state.view == HELP:
         body = help_pane(state, width, body_height)
     elif state.view == READER:
-        body = reader(state, width - 2, body_height)
-        body = [Text("  ").append_text(line) for line in body]
+        # The reader owns its own two-cell gutter — that is where the thread
+        # spine is drawn — so it is handed the whole width, not an indent.
+        body = reader(state, width, body_height)
     elif not sidebar_visible(state, width):
         body = listing(state, width, body_height)
     else:
@@ -613,7 +806,7 @@ def frame(state: UIState, width: int, height: int) -> RenderableType:
         left = sidebar(state, SIDEBAR_WIDTH, body_height)
         right = listing(state, pane_width, body_height)
         body = [
-            Text.assemble(l, ("│", THEME["rule"]), r)
+            Text.assemble(l, (DIVIDER, THEME["rule"]), r)
             for l, r in zip(left, right)
         ]
 

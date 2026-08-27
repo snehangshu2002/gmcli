@@ -536,11 +536,11 @@ class MailApp:
             self._action_key(key)
 
     def _reader_length(self) -> int:
-        lines, _ = render.reader_lines(self.state, self.console.size[0] - 2)
+        lines, _ = render.reader_lines(self.state, self.console.size[0])
         return len(lines)
 
     def _jump_message(self, delta: int) -> None:
-        _, starts = render.reader_lines(self.state, self.console.size[0] - 2)
+        _, starts = render.reader_lines(self.state, self.console.size[0])
         if not starts:
             return
         current = max((i for i, start in enumerate(starts)

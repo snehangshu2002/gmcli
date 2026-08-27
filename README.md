@@ -192,21 +192,26 @@ $ gmail ui --no-mouse               # leave text selection to the terminal
 ```
 
 ```
- gmail · you@example.com                  Inbox  12 unread  ·  14:07   ⟳ refresh 
-MAILBOXES           │   #     From             Subject                    Date
-▌Inbox           12 │   1     Dana Ortiz       Q3 numbers, final pass    14:02
- Unread          12 │   2     GitHub           [gmcli] PR #12            13:11
- Starred            │ ✓ 3 ★📎  Priya Raman      Re: contract redlines     11:40
- Sent               │   4     AWS Billing      Your invoice is available Mar 03
- Drafts           2 │   5     Sam Iyer         lunch thursday?           Mar 01
- All Mail           │
- Trash              │
- ── LABELS ─────────│
- clients/acme       │
- finance          3 │
-5 conversations
- j/k move  ↵ open  x mark  a archive  s star  u unread  L label  / search  ⟳ refresh
+ ▎gmail  you@example.com                           Inbox  12 unread  · 14:07  ⟳ refresh
+MAILBOXES             ▏    #     FROM         SUBJECT                               DATE
+▎Inbox             12 ▏▎   1 ●   Dana Ortiz   Q3 numbers, final pass               14:02
+ Unread            12 ▏    2 ●   GitHub       [gmcli] PR #12  sanket opened a …    13:11
+ Starred              ▏ ✓  3  ★▣ Priya Raman  Re: contract redlines                11:40
+ Sent                 ▏    4     AWS Billing  Your invoice is available           Mar 03
+ Drafts             2 ▏    5     Sam Iyer     lunch thursday?  the thai place …   Mar 01
+ All Mail             ▏
+ Trash                ▏
+ Spam                 ▏
+ LABELS ───────────── ▏
+ clients/acme         ▏
+ finance            3 ▏
+ · 5 conversations
+ j/k move  ↵ open  x mark  a archive  s star  u unread  L label  c compose  / search
 ```
+
+`●` is unread, `★` starred, `▣` carries an attachment, and `✓` is a row you
+marked for the next action. The bar down the first column is the cursor. Where
+a subject leaves room, Gmail's own snippet fills the rest of the line.
 
 The time in the header is when the list was last loaded, so you can see at a
 glance how stale it is. **⟳ refresh** in the top right re-fetches the mailbox

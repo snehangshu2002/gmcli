@@ -171,6 +171,30 @@ Five modules, and the split is load-bearing:
   `app.py` also calls `console.clear()` once when Live starts, for the same
   class of host.
 
+  `THEME` is the whole palette, and two of its entries carry rules. `accent`
+  (brass) is the only warm colour on screen and means exactly one thing —
+  mail that wants something from you, or a key you can press; spending it on
+  decoration is what makes the frame stop reading. `cursor`/`cursor_idle` set
+  a **background and no foreground**, so the row under the cursor keeps its
+  own colour coding instead of being flattened; the bar in the first column is
+  what identifies the row on terminals where the tint is too subtle to see.
+
+  Build a `Text` bare and style each `append`, never `Text(x, style=...)` as a
+  container: a base style reaches everything appended after it. That is how
+  the reader's message bodies once came out in hairline grey, and how a list
+  snippet came out bold.
+
+  The reader owns a three-cell gutter and is handed the *full* width — that
+  gutter is where the thread spine is drawn, a hairline with a `◆` at each
+  message, and it appears only when a thread actually has more than one
+  message. `frame()` and `app.py`'s two `reader_lines()` calls must agree on
+  that width or `n`/`p` jump to the wrong line.
+
+  The footer is laid out once by `_hint_layout()`; `key_hints()` draws from it
+  and `key_hint_spans()` clicks from it, so a click can never land on a hint
+  the frame did not draw. Widening the gap between hints costs a hint at the
+  right-hand end before it costs anything else.
+
   It also owns `hit_test()`, which turns a cell coordinate back into a pane and
   a row. That lives here on purpose: layout geometry has exactly one home, and
   a click landing a row off is the failure mode when it gets a second one.
