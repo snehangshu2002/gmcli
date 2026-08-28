@@ -639,7 +639,7 @@ Click **Advanced → Go to (your app)**.
 ## Development
 
 ```console
-$ git clone https://github.com/snehangshu/gmcli && cd gmcli
+$ git clone https://github.com/snehangshu2002/gmcli && cd gmcli
 $ uv venv && uv pip install -e '.[dev]'
 $ uv run pytest
 ```

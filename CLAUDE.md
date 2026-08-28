@@ -19,7 +19,7 @@ the single `gmail.modify` scope.
 ```bash
 uv venv && uv pip install -e '.[dev]'   # first-time setup
 
-uv run pytest                            # full suite (~350 tests, all offline)
+uv run pytest                            # full suite (~465 tests, all offline)
 uv run pytest tests/test_compose.py      # one file
 uv run pytest tests/test_compose.py::test_reply_subject_gets_one_re_prefix   # one test
 uv run pytest -k threading -q            # by keyword
