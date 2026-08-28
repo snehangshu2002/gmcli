@@ -11,3 +11,4 @@ build/
 htmlcov/
 client_secret*.json
 token*.json
+RELEASING.md
