@@ -25,16 +25,19 @@ from pathlib import Path
 import typer
 
 from ..auth.client_config import load_client_file
-from ..auth.flow import install_client_secret, login
-from ..config import client_secret_path
+from ..auth.flow import install_client_secret, install_notes, login
+from ..config import DOWNLOAD_DIRS as BROWSER_DOWNLOAD_DIRS
+from ..config import client_secret_path, is_in_download_dir
 from ..context import AppContext
 from ..errors import AuthError, UsageError
 from ..output import Renderer
 
 CONSOLE = "https://console.cloud.google.com"
 
-# Where browsers land a downloaded client, newest first wins.
-DOWNLOAD_DIRS = ("~/Downloads", "~/Desktop", ".")
+# Where browsers land a downloaded client, newest first wins. The current
+# directory is searched but is not one of ``config.DOWNLOAD_DIRS``: a file
+# someone ran the command next to is not in transit, so it is never moved.
+DOWNLOAD_DIRS = (*BROWSER_DOWNLOAD_DIRS, ".")
 DOWNLOAD_GLOBS = ("client_secret*.json", "client_secret*.JSON")
 # A file touched within this window is almost certainly the one just downloaded.
 FRESH_SECONDS = 1800
@@ -129,6 +132,12 @@ def _collect_client_file(out: Renderer) -> Path:
         if candidates:
             best = candidates[0]
             out.info(f"\n  Found [green]{best}[/green]")
+            if is_in_download_dir(best):
+                out.info(
+                    "  [dim]It will be moved into gmcli's data directory, not "
+                    "copied — an OAuth client should not be left in a download "
+                    "folder. Re-run with --keep-download to leave it.[/dim]"
+                )
             if typer.confirm("  Use this file?", default=True):
                 return best
 
@@ -179,6 +188,12 @@ def register(auth_app: typer.Typer) -> None:
         force: bool = typer.Option(
             False, "--force", "-f", help="Replace an already-installed client."
         ),
+        keep_download: bool = typer.Option(
+            False,
+            "--keep-download",
+            help="Leave the downloaded client JSON in place. By default it is "
+            "moved out of ~/Downloads rather than copied.",
+        ),
     ) -> None:
         """Set up Google sign-in, step by step.
 
@@ -191,8 +206,9 @@ def register(auth_app: typer.Typer) -> None:
 
         # The fast path: a file was handed to us, so no walkthrough is needed.
         if credentials is not None:
-            install_client_secret(credentials)
+            installed = install_client_secret(credentials, keep_source=keep_download)
             out.success(f"Installed OAuth client from {credentials}")
+            _report_install(out, installed)
             _finish_with_login(app_ctx, no_browser=no_browser)
             return
 
@@ -226,15 +242,28 @@ def register(auth_app: typer.Typer) -> None:
         _step_create_client(out, project, total, no_browser)
 
         path = _collect_client_file(out)
-        install_client_secret(path)
+        installed = install_client_secret(path, keep_source=keep_download)
         client = load_client_file(client_secret_path())
         out.success(f"OAuth client installed ({client.client_id[:24]}…)")
+        _report_install(out, installed, client_id=client.client_id)
 
         _finish_with_login(app_ctx, no_browser=no_browser)
 
     # Registration appends, but `setup` is where a new user starts, so it
     # belongs at the top of `gmail auth --help` rather than the bottom.
     auth_app.registered_commands.insert(0, auth_app.registered_commands.pop())
+
+
+def _report_install(out: Renderer, installed, client_id: str | None = None) -> None:
+    """Say what became of the file the client came from.
+
+    The user handed a path to a file they can see; if gmcli deleted it, that
+    has to be stated rather than discovered.
+    """
+    if client_id is None:
+        client_id = load_client_file(client_secret_path()).client_id
+    for level, message in install_notes(installed, client_id):
+        (out.warn if level == "warn" else out.info)(message)
 
 
 def _intro(out: Renderer) -> None:

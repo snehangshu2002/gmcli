@@ -11,6 +11,8 @@ from ..auth.flow import (
     PUBLISHING_STATUS_HINT,
     SCOPES,
     TESTING_TOKEN_LIFETIME_DAYS,
+    install_client_secret,
+    install_notes,
     load_credentials,
     login,
     logout,
@@ -54,6 +56,12 @@ def login_cmd(
         help="Fix the loopback redirect port (useful over an SSH tunnel). "
         "0 picks a free one.",
     ),
+    keep_download: bool = typer.Option(
+        False,
+        "--keep-download",
+        help="Leave the credentials file where it is. By default a client "
+        "found in ~/Downloads or ~/Desktop is moved, not copied.",
+    ),
 ) -> None:
     """Authorize an account through your browser."""
     app_ctx: AppContext = ctx.obj
@@ -63,9 +71,15 @@ def login_cmd(
     # like a crash rather than a missing prerequisite.
     resolve_client(credentials, config=app_ctx.config)
 
+    # Install here rather than inside `login`, so the file is safe before the
+    # browser opens and this command has something to report about it.
+    installed = None
+    if credentials is not None:
+        installed = install_client_secret(credentials, keep_source=keep_download)
+
     out.info("Opening your browser to authorize gmcli…")
     out.info(f"[dim]Requesting scope: {SCOPES[0]}[/dim]")
-    email, store, client = login(credentials=credentials, port=port)
+    email, store, client = login(port=port)
 
     if app_ctx.json_mode:
         out.json(
@@ -80,6 +94,9 @@ def login_cmd(
 
     out.success(f"Authorized as [bold]{email}[/bold]")
     out.info(f"[dim]Credentials stored in {store.description}[/dim]")
+    if installed is not None:
+        for level, message in install_notes(installed, client.client_id):
+            (out.warn if level == "warn" else out.info)(message)
 
     if not app_ctx.config.default_account:
         app_ctx.config.default_account = email

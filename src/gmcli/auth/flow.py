@@ -14,10 +14,16 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..config import client_secret_path, write_secret_file
+from ..config import (
+    DOWNLOAD_DIRS,
+    client_secret_path,
+    is_in_download_dir,
+    write_secret_file,
+)
 from ..errors import AuthError
 from .client_config import ClientConfig, parse_client_file, resolve_client
 from .store import TokenStore, get_store, register_account
@@ -37,12 +43,37 @@ PUBLISHING_STATUS_HINT = (
 )
 
 
-def install_client_secret(source: Path) -> Path:
-    """Copy the user's OAuth client into our data dir so later logins are flagless.
+@dataclass(frozen=True)
+class Installed:
+    """Where the client went, and what happened to the file it came from."""
+
+    path: Path
+    source: Path
+    moved: bool = False
+    #: Set when the source was in a download directory but could not be removed.
+    left_behind: str | None = None
+
+    def __fspath__(self) -> str:
+        """So an ``Installed`` is still usable anywhere the path was."""
+        return str(self.path)
+
+
+def install_client_secret(source: Path, *, keep_source: bool = False) -> Installed:
+    """Install the user's OAuth client into our data dir, at ``0600``.
 
     Validation goes through the same parser the resolver uses, so a web client
     or a service-account key is rejected here with the same explanation rather
     than failing later inside the consent flow.
+
+    A client that came out of a download directory is *moved* rather than
+    copied: the browser wrote it world-readable into a directory that syncs,
+    backs up, and gets shared out of, and a copy left there is a live
+    credential nobody is looking after. It is safe to lose because it is not
+    lost — the destination is written and fsynced-into-place first, and the
+    source is only unlinked once that has succeeded, so a failure at any point
+    leaves at least one readable copy. Anywhere else the file is left exactly
+    where it is: a path the user typed or keeps in a repo is a path they
+    chose, and deleting it would be a surprise rather than a tidy-up.
     """
     source = source.expanduser()
     if not source.exists():
@@ -59,7 +90,80 @@ def install_client_secret(source: Path) -> Path:
 
     dest = client_secret_path()
     write_secret_file(dest, json.dumps(payload, indent=2))
-    return dest
+
+    if keep_source or not is_in_download_dir(source) or source.resolve() == dest:
+        return Installed(path=dest, source=source)
+    try:
+        source.unlink()
+    except OSError as exc:
+        # Not fatal: the client is installed and works. Say so, because the
+        # whole point was that the copy in Downloads should stop existing.
+        return Installed(path=dest, source=source, left_behind=str(exc))
+    return Installed(path=dest, source=source, moved=True)
+
+
+def install_notes(installed: "Installed", client_id: str) -> list[tuple[str, str]]:
+    """What a front end should say after an install, as ``(level, message)``.
+
+    The text lives here rather than in the commands because both ``auth login``
+    and ``auth setup`` install a client and must say the same thing about it;
+    the levels keep ``output.py`` in charge of how it looks.
+    """
+    notes: list[tuple[str, str]] = []
+    if installed.moved:
+        notes.append(
+            (
+                "info",
+                f"Moved {installed.source} out of your downloads — "
+                f"it now lives only at {installed.path} (0600).",
+            )
+        )
+    elif installed.left_behind:
+        notes.append(
+            (
+                "warn",
+                f"Could not remove {installed.source} ({installed.left_behind}). "
+                "It is a working OAuth client — delete it yourself.",
+            )
+        )
+
+    leftovers = [
+        p for p in other_downloaded_copies(client_id) if p != installed.source
+    ]
+    if leftovers:
+        listed = ", ".join(str(p) for p in leftovers)
+        notes.append(
+            (
+                "warn",
+                f"Another copy of this same client is still in your downloads: "
+                f"{listed}. gmcli will not delete a file it was not given.",
+            )
+        )
+    return notes
+
+
+def other_downloaded_copies(client_id: str) -> list[Path]:
+    """Client files in the download directories carrying this same client id.
+
+    Re-downloading gives you ``client_secret_… (1).json`` next to the original,
+    and moving one of them out solves nothing while its twin is still there.
+    These are only reported, never removed: gmcli takes responsibility for the
+    file it was handed, not for tidying a directory it does not own.
+    """
+    found: list[Path] = []
+    for name in DOWNLOAD_DIRS:
+        base = Path(name).expanduser()
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob("client_secret*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            block = payload.get("installed")
+            if isinstance(block, dict) and block.get("client_id") == client_id:
+                found.append(path)
+    return found
 
 
 def _serialize(creds: Any, account: str) -> dict[str, Any]:
@@ -226,10 +330,13 @@ __all__ = [
     "PUBLISHING_STATUS_HINT",
     "SCOPES",
     "TESTING_TOKEN_LIFETIME_DAYS",
+    "Installed",
     "fetch_account_email",
     "install_client_secret",
+    "install_notes",
     "load_credentials",
     "login",
     "logout",
+    "other_downloaded_copies",
     "token_age_days",
 ]

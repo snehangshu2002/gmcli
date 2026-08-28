@@ -153,8 +153,16 @@ Then hand it over:
 $ gmail auth login --credentials ~/Downloads/client_secret_1234.json
 ```
 
-gmcli copies the file into its own data directory at mode `0600`, so later
+gmcli installs the file into its own data directory at mode `0600`, so later
 logins need no flag.
+
+A file that came out of `~/Downloads` or `~/Desktop` is **moved** rather than
+copied — the browser wrote a working OAuth client into a directory that syncs,
+backs up, and gets shared out of, and gmcli will not leave a second copy of it
+there. The destination is written first and the original removed only once that
+succeeded, so there is always at least one readable copy. Pass
+`--keep-download` to leave the file where it is; a client anywhere else is
+copied and never touched.
 
 </details>
 

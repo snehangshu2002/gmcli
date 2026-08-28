@@ -8,7 +8,7 @@ import time
 import pytest
 
 from gmcli.auth import client_config as cc
-from gmcli.config import Config, client_secret_path
+from gmcli.config import Config, client_secret_path, is_in_download_dir
 from gmcli.errors import AuthError
 
 
@@ -233,3 +233,126 @@ def test_unrelated_files_are_not_picked_up(tmp_path, monkeypatch):
 
     monkeypatch.setattr(setup, "DOWNLOAD_DIRS", (str(downloads),))
     assert setup.find_downloaded_client() == []
+
+
+# -- a downloaded client is moved, not copied --------------------------------
+
+
+def downloaded(tmp_path, payload: dict | None = None, name: str = "client_secret_1.json"):
+    """A client JSON sitting in ``~/Downloads``, as a browser would leave it."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir(exist_ok=True)
+    path = downloads / name
+    path.write_text(json.dumps(payload or desktop_payload()), encoding="utf-8")
+    return path
+
+
+def test_a_client_in_downloads_is_moved_out_of_it(isolated_dirs):
+    from gmcli.auth import flow
+
+    source = downloaded(isolated_dirs)
+    result = flow.install_client_secret(source)
+
+    assert result.moved is True
+    assert not source.exists()  # the browser's copy is gone
+    assert client_secret_path().exists()
+    assert cc.load_client_file(client_secret_path()).client_secret == "shh"
+
+
+def test_the_installed_copy_is_private(isolated_dirs):
+    from gmcli.auth import flow
+
+    flow.install_client_secret(downloaded(isolated_dirs))
+    assert client_secret_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_a_client_kept_elsewhere_is_only_copied(isolated_dirs, tmp_path):
+    """A path someone chose is a path they meant; deleting it is a surprise."""
+    from gmcli.auth import flow
+
+    kept = tmp_path / "dotfiles" / "client.json"
+    kept.parent.mkdir()
+    kept.write_text(json.dumps(desktop_payload()), encoding="utf-8")
+
+    result = flow.install_client_secret(kept)
+    assert result.moved is False
+    assert kept.exists()
+    assert client_secret_path().exists()
+
+
+def test_keep_source_leaves_the_download_alone(isolated_dirs):
+    from gmcli.auth import flow
+
+    source = downloaded(isolated_dirs)
+    result = flow.install_client_secret(source, keep_source=True)
+    assert result.moved is False
+    assert source.exists()
+    assert client_secret_path().exists()
+
+
+def test_an_invalid_client_is_rejected_before_anything_is_deleted(isolated_dirs):
+    """Nothing is removed on a path that never installed anything."""
+    from gmcli.auth import flow
+
+    source = downloaded(isolated_dirs, {"web": {"client_id": "x"}})
+    with pytest.raises(AuthError):
+        flow.install_client_secret(source)
+    assert source.exists()
+    assert not client_secret_path().exists()
+
+
+def test_an_unremovable_download_is_reported_not_swallowed(isolated_dirs, monkeypatch):
+    """The client still installs; the point is that the user is told."""
+    from gmcli.auth import flow
+
+    source = downloaded(isolated_dirs)
+
+    def refuse(self):
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr("pathlib.Path.unlink", refuse)
+    result = flow.install_client_secret(source)
+
+    assert result.moved is False
+    assert result.left_behind == "Permission denied"
+    assert client_secret_path().exists()
+    levels = [level for level, _ in flow.install_notes(result, "111-abc")]
+    assert "warn" in levels
+
+
+def test_a_second_copy_of_the_same_client_is_reported(isolated_dirs):
+    """Browsers name a re-download `… (1).json`, and one left behind is the
+    same live credential the move was meant to get rid of."""
+    from gmcli.auth import flow
+
+    twin = downloaded(isolated_dirs, name="client_secret_1 (1).json")
+    source = downloaded(isolated_dirs)
+
+    result = flow.install_client_secret(source)
+    notes = flow.install_notes(result, "111-abc.apps.googleusercontent.com")
+
+    assert twin.exists()  # reported, never deleted
+    assert any(level == "warn" and str(twin) in text for level, text in notes)
+
+
+def test_a_different_client_in_downloads_is_not_mentioned(isolated_dirs):
+    from gmcli.auth import flow
+
+    other = downloaded(
+        isolated_dirs,
+        desktop_payload("999-zzz.apps.googleusercontent.com"),
+        name="client_secret_other.json",
+    )
+    result = flow.install_client_secret(downloaded(isolated_dirs))
+    notes = flow.install_notes(result, "111-abc.apps.googleusercontent.com")
+
+    assert other.exists()
+    assert not any(str(other) in text for _, text in notes)
+
+
+def test_the_current_directory_is_not_a_download_folder(isolated_dirs, tmp_path):
+    """`.` is searched for a client but never emptied of one."""
+    from gmcli.commands import setup
+
+    assert "." in setup.DOWNLOAD_DIRS
+    assert not is_in_download_dir(tmp_path / "here" / "client_secret.json")

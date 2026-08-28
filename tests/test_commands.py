@@ -617,6 +617,55 @@ def fake_login(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fake_auth_login(monkeypatch):
+    """Stub the consent flow for `auth login`, as ``fake_login`` does for setup."""
+    from gmcli.auth.client_config import ClientConfig
+    from gmcli.auth.store import FileStore
+    from gmcli.commands import auth as auth_mod
+
+    calls = []
+
+    def _login(**kwargs):
+        calls.append(kwargs)
+        store = FileStore()
+        store.save(ACCOUNT, {"token": "t", "refresh_token": "r"})
+        return ACCOUNT, store, ClientConfig(
+            "999-xyz.apps.googleusercontent.com", "shh", "installed client"
+        )
+
+    monkeypatch.setattr(auth_mod, "login", _login)
+    return calls
+
+
+def test_login_moves_a_downloaded_client_out_of_downloads(
+    isolated_dirs, tmp_path, fake_auth_login
+):
+    from gmcli.config import client_secret_path
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    path = desktop_client_file(downloads)
+
+    result = invoke("auth", "login", "--credentials", str(path))
+
+    assert result.exit_code == 0, result.output
+    assert not path.exists()
+    assert client_secret_path().exists()
+    assert "Moved" in result.output
+
+
+def test_login_can_be_told_to_leave_the_download(
+    isolated_dirs, tmp_path, fake_auth_login
+):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    path = desktop_client_file(downloads)
+
+    invoke("auth", "login", "--credentials", str(path), "--keep-download")
+    assert path.exists()
+
+
 def test_setup_is_registered(env):
     result = invoke("auth", "setup", "--help")
     assert result.exit_code == 0
@@ -645,6 +694,41 @@ def test_setup_installs_the_client_for_later_logins(
 
     assert client_secret_path().exists()
     assert resolve_client().client_id == "999-xyz.apps.googleusercontent.com"
+
+
+def test_setup_moves_a_downloaded_client_out_of_downloads(
+    isolated_dirs, tmp_path, fake_login
+):
+    """The whole point: after setup, no OAuth client is left in ~/Downloads."""
+    from gmcli.config import client_secret_path
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    path = desktop_client_file(downloads)
+
+    result = invoke("auth", "setup", "--credentials", str(path))
+
+    assert result.exit_code == 0, result.output
+    assert not path.exists()
+    assert client_secret_path().exists()
+    assert "Moved" in result.output
+
+
+def test_setup_can_be_told_to_leave_the_download(isolated_dirs, tmp_path, fake_login):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    path = desktop_client_file(downloads)
+
+    invoke("auth", "setup", "--credentials", str(path), "--keep-download")
+    assert path.exists()
+
+
+def test_setup_does_not_delete_a_client_kept_elsewhere(
+    isolated_dirs, tmp_path, fake_login
+):
+    path = desktop_client_file(tmp_path)
+    invoke("auth", "setup", "--credentials", str(path))
+    assert path.exists()
 
 
 def test_setup_sets_the_default_account(isolated_dirs, tmp_path, fake_login):

@@ -203,4 +203,9 @@ def isolated_dirs(tmp_path, monkeypatch):
         monkeypatch.setenv(var, str(target))
     # Never let a test reach the developer's real keyring.
     monkeypatch.setenv("GMCLI_TOKEN_STORE", "file")
+    # …nor their real home. `~/Downloads` is a path gmcli both reads and
+    # *deletes from* (see `auth/flow.py:install_client_secret`), and it does
+    # not come from XDG, so redirecting HOME is the only thing between the
+    # suite and a developer's actual download folder.
+    monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path

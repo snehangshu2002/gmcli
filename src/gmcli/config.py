@@ -30,6 +30,31 @@ SECRET_MODE = 0o600
 SECRET_DIR_MODE = 0o700
 
 
+# Where a browser lands a file. These are transit, not storage: nothing in
+# them is where the user meant to keep it, and a directory every download in
+# the world passes through is the wrong home for an OAuth client. Anything
+# gmcli installs from here it takes *out* of here — see
+# ``auth/flow.py:install_client_secret``. The current directory is
+# deliberately absent: setup looks there for a downloaded client, but a file
+# someone chose to run the command next to is not in transit.
+DOWNLOAD_DIRS = ("~/Downloads", "~/Desktop")
+
+
+def is_in_download_dir(path: Path) -> bool:
+    """Whether ``path`` sits directly in a browser's download directory."""
+    try:
+        parent = path.expanduser().resolve().parent
+    except OSError:  # pragma: no cover - unresolvable path
+        return False
+    for name in DOWNLOAD_DIRS:
+        try:
+            if parent == Path(name).expanduser().resolve():
+                return True
+        except OSError:  # pragma: no cover - unresolvable path
+            continue
+    return False
+
+
 def config_dir() -> Path:
     return Path(platformdirs.user_config_dir(APP_NAME))
 
