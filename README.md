@@ -539,11 +539,16 @@ Exit codes:
 
 ```console
 $ gmail auth setup                                      # once, first account
-$ gmail auth login                                      # repeat per account
+$ gmail login                                           # repeat per account
 $ gmail auth list
 $ gmail auth switch work@example.com                    # set the default
 $ gmail --account personal@gmail.com ls                 # override per command
+$ gmail logout                                          # forget this machine's copy
+$ gmail logout --all                                    # every account
 ```
+
+`gmail login` and `gmail logout` are the same commands as `gmail auth login`
+and `gmail auth logout`, spelled where you would first look for them.
 
 ## Configuration
 

@@ -160,6 +160,16 @@ Consequences when editing `cli.py`:
   near the bottom, or its commands will not be guarded.
 - To signal a failure, `raise` the appropriate `GmcliError` subclass with a
   `hint=` — do not call `sys.exit` or print-and-return.
+- An **option callback** (`--version`, `--upgrade`, `--account`) runs *outside*
+  those wrappers, so it must `_report` and `raise typer.Exit(code=…)` itself.
+
+The root callback is `invoke_without_command=True`, so global options with no
+command reach `_no_command()` instead of stopping at Click's bare "Missing
+command.": it prints the same help bare `gmail` does and exits 2 — except
+under `--json`, where the help would land on the pipe, so the error goes to
+stderr instead. `_account_callback` rejects an `--account` value with no `@`
+in it, because the parser hands the option whatever token follows and
+`gmail --account -A` otherwise made `-A` the mailbox name.
 
 ### Two command registration styles
 
@@ -177,6 +187,14 @@ Both are in use, deliberately:
 called at the *bottom* of `commands/auth.py` (`setup.py` imports nothing from
 `auth.py`, so there is no cycle). It also reorders itself to the front of the
 group's help, since it is where a new user starts.
+
+`commands/auth.py` uses *both* styles: its `app` group is added with
+`add_typer`, and its `register(root)` additionally attaches `gmail login` and
+`gmail logout` to the root app — the same two callbacks, not copies, so the
+short spellings cannot drift from `gmail auth login`/`logout`. Each
+registration gets its own `_guard` wrapper, which is all `cli.py` needs.
+`test_the_two_spellings_of_login_and_logout_cannot_drift` compares the two
+parameter lists.
 
 ### The `ui/` package
 

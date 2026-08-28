@@ -1,4 +1,10 @@
-"""``gmail auth …`` — login, logout, account switching, and diagnostics."""
+"""``gmail auth …`` — login, logout, account switching, and diagnostics.
+
+``gmail login`` and ``gmail logout`` are the same two commands attached to the
+root app as well, by :func:`register`: getting in and out is the pair of verbs
+a user reaches for before they know the group exists, and it costs nothing to
+answer where they look for it.
+"""
 
 from __future__ import annotations
 
@@ -415,6 +421,25 @@ def _clock_skew_seconds() -> float | None:
         return ((before + after) / 2) - server
     except Exception:  # noqa: BLE001 - diagnostics must never crash
         return None
+
+
+def register(root: typer.Typer) -> None:
+    """Attach ``gmail login`` / ``gmail logout`` to the root app.
+
+    The same callbacks, not copies, so the two spellings can never drift in
+    flags or behaviour — each registration carries its own error-handling
+    wrapper, which is all ``cli.py`` needs.
+    """
+    root.command(
+        "login",
+        help="Authorize an account through your browser. "
+        "Same as [bold]gmail auth login[/bold].",
+    )(login_cmd)
+    root.command(
+        "logout",
+        help="Remove stored credentials from this machine. "
+        "Same as [bold]gmail auth logout[/bold].",
+    )(logout_cmd)
 
 
 # Registered here rather than in cli.py so the wizard travels with the group it

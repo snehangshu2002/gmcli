@@ -566,6 +566,35 @@ def test_version():
     assert "gmcli" in result.output
 
 
+def test_global_options_with_no_command_show_the_help(env):
+    """A bare "Missing command." names the problem and nothing else."""
+    result = invoke("--quiet")
+    assert result.exit_code == 2
+    assert "Usage:" in result.output
+    assert "login" in result.output
+
+
+def test_no_command_under_json_keeps_stdout_empty(env):
+    """The help would land on the pipe, so the error goes to stderr instead."""
+    result = invoke("--json")
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert "No command given" in result.output
+
+
+def test_a_mistyped_flag_is_not_taken_as_an_account(env):
+    """`--account -A` used to make "-A" the mailbox and fail much later."""
+    result = invoke("--account", "-A", "ls")
+    assert result.exit_code == 2
+    assert "email address" in result.output
+    assert not env.calls
+
+
+def test_account_still_accepts_an_address(env):
+    seed_threads(env)
+    assert invoke("--account", ACCOUNT, "ls").exit_code == 0
+
+
 def test_cache_clear(env):
     seed_threads(env)
     invoke("ls")
@@ -664,6 +693,37 @@ def test_login_can_be_told_to_leave_the_download(
 
     invoke("auth", "login", "--credentials", str(path), "--keep-download")
     assert path.exists()
+
+
+def test_logout_is_reachable_without_the_auth_group(env):
+    from gmcli.auth.store import list_accounts
+
+    result = invoke("logout")
+    assert result.exit_code == 0, result.output
+    assert list_accounts() == []
+
+
+def test_login_is_reachable_without_the_auth_group(
+    isolated_dirs, tmp_path, fake_auth_login
+):
+    path = desktop_client_file(tmp_path)
+    result = invoke("login", "--credentials", str(path))
+
+    assert result.exit_code == 0, result.output
+    assert fake_auth_login, "the consent flow was never reached"
+    assert ACCOUNT in result.output
+
+
+def test_the_two_spellings_of_login_and_logout_cannot_drift():
+    """`gmail login` is the same command object as `gmail auth login`."""
+    import typer.main
+
+    root = typer.main.get_command(app)
+    auth_group = root.get_command(None, "auth")
+    for name in ("login", "logout"):
+        top = root.get_command(None, name)
+        grouped = auth_group.get_command(None, name)
+        assert [p.opts for p in top.params] == [p.opts for p in grouped.params]
 
 
 def test_setup_is_registered(env):

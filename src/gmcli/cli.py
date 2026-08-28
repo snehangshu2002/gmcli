@@ -19,7 +19,7 @@ from .commands import listing, modify, read, send
 from .commands import ui_cmd
 from .config import Config
 from .context import AppContext
-from .errors import GmcliError
+from .errors import GmcliError, UsageError
 
 app = typer.Typer(
     name="gmail",
@@ -45,6 +45,7 @@ app.add_typer(draft_cmd.app, name="draft")
 app.add_typer(attachments_cmd.app, name="attachments")
 app.add_typer(cache_cmd.app, name="cache")
 
+auth_cmd.register(app)
 listing.register(app)
 read.register(app)
 modify.register(app)
@@ -105,6 +106,50 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _account_callback(value: str | None) -> str | None:
+    """Reject an ``--account`` value that cannot be an address.
+
+    ``gmail --account -A`` is the shape that motivates this: the parser hands
+    the option whatever token comes next, so a mistyped flag became the
+    mailbox name and the mistake surfaced much later — as a missing-credential
+    error naming ``-A``, or not at all on a command that never opens the
+    account. An option callback runs outside the wrappers installed below, so
+    it maps itself onto the documented usage exit code.
+    """
+    if value is None:
+        return None
+    if "@" not in value:
+        exc = UsageError(
+            f"--account expects an email address, not {value!r}.",
+            hint="`gmail auth list` shows the accounts you are logged in to.",
+        )
+        _report(exc)
+        raise typer.Exit(code=exc.exit_code)
+    return value
+
+
+def _no_command(ctx: typer.Context, json_mode: bool) -> None:
+    """Handle global options given with no command to run.
+
+    ``gmail --json`` used to stop at a bare "Missing command.", which names
+    the problem and nothing else. Bare ``gmail`` already answers it by
+    printing the help, so do the same here — the flags are the front half of a
+    command the user has not finished typing. Under ``--json`` the help would
+    land on the pipe, so that case gets the error on stderr instead.
+    """
+    if json_mode:
+        _report(
+            UsageError(
+                "No command given.",
+                hint="Run `gmail --help` to see the commands.",
+            )
+        )
+    else:
+        # Typer renders the help itself and returns an empty string.
+        ctx.get_help()
+    raise typer.Exit(code=2)
+
+
 def _upgrade_callback(value: bool) -> None:
     """``gmail --upgrade``: fetch the current release and install it.
 
@@ -151,7 +196,7 @@ def _announce_update(ctx: typer.Context) -> None:
     update.start_check(app_ctx.config)
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
     account: str = typer.Option(
@@ -160,6 +205,7 @@ def main_callback(
         "-A",
         help="Act on this account instead of the default.",
         metavar="EMAIL",
+        callback=_account_callback,
     ),
     json_output: bool = typer.Option(
         False,
@@ -189,6 +235,9 @@ def main_callback(
     ),
 ) -> None:
     """Manage Gmail from the terminal."""
+    if ctx.invoked_subcommand is None:
+        _no_command(ctx, json_output)
+
     config = Config.load()
     ctx.obj = AppContext(
         account_override=account,
