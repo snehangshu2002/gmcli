@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -166,3 +167,33 @@ def test_html_to_text_flattens_markup():
 
 def test_html_to_text_turns_breaks_into_newlines():
     assert "\n" in html_to_text("one<br>two")
+
+
+# -- clickable links ----------------------------------------------------------
+
+
+def test_read_emits_osc8_hyperlinks_for_urls_and_footnote_markers():
+    """`gmail read` hands the terminal the address, not just the text of it.
+
+    Both halves matter: a URL short enough to stay in the sentence, and the
+    `[1]` a long one leaves behind once it has moved to the footnotes.
+    """
+    from rich.console import Console
+
+    long_url = "https://example.com/campaign/" + "a" * 90
+    msg = Message.from_api(
+        make_message(body=f"short https://example.com/x and long <{long_url}>here")
+    )
+    buf = io.StringIO()
+    renderer = Renderer()
+    renderer.out = Console(file=buf, force_terminal=True, width=400)
+    renderer.message_detail([msg])
+    out = buf.getvalue()
+
+    def linked(url: str) -> list[str]:
+        """The visible text of every hyperlink pointing at `url`."""
+        opener = r"\x1b\]8;[^\x1b]*" + re.escape(url) + r"\x1b\\"
+        return re.findall(opener + r"([^\x1b]*)", out)
+
+    assert linked("https://example.com/x") == ["https://example.com/x"]
+    assert "[1]" in linked(long_url)

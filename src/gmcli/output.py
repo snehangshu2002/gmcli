@@ -18,6 +18,15 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+# `html_to_text` is re-exported: it lived here before mail bodies needed real
+# cleaning, and `from gmcli.output import html_to_text` is still how callers ask
+# for it.
+from .bodytext import (  # noqa: F401
+    footnote_targets,
+    html_to_text,
+    linkify,
+    message_body,
+)
 from .models import Attachment, Label, Message, Thread, split_quoted
 
 
@@ -200,11 +209,16 @@ class Renderer:
             if body is None:
                 self.out.print("[dim](no readable text body)[/dim]")
             else:
+                # OSC 8 hyperlinks, so an address in the body is a click in
+                # any terminal that supports them and plain text everywhere
+                # else. Rich drops the escapes when stdout is not a terminal,
+                # which is what keeps `gmail read | less` readable.
+                targets = footnote_targets(body)
                 visible, quoted = split_quoted(body)
-                self.out.print(Text(visible))
+                self.out.print(linkify(Text(visible), targets))
                 if quoted:
                     if show_quoted:
-                        self.out.print(Text(quoted, style="dim"))
+                        self.out.print(linkify(Text(quoted, style="dim"), targets))
                     else:
                         lines = len(quoted.splitlines())
                         self.out.print(
@@ -236,13 +250,7 @@ class Renderer:
 
     @staticmethod
     def _pick_body(msg: Message, *, prefer_html: bool) -> str | None:
-        if prefer_html and msg.body_html:
-            return msg.body_html
-        if msg.body_text:
-            return msg.body_text
-        if msg.body_html:
-            return html_to_text(msg.body_html)
-        return None
+        return message_body(msg, prefer_html=prefer_html)
 
     # -- labels / attachments ------------------------------------------------
 
@@ -305,31 +313,3 @@ class Renderer:
         for key, value in rows:
             table.add_row(key, value)
         self.out.print(table)
-
-
-_TAG_RE = None
-
-
-def html_to_text(html: str) -> str:
-    """Crude HTML flattening for messages that ship no text/plain part.
-
-    Deliberately not a full renderer — it drops script/style, turns block
-    breaks into newlines, strips tags, and unescapes entities. Good enough to
-    read a message; ``--html`` shows the source when it is not.
-    """
-    global _TAG_RE
-    import html as html_mod
-    import re
-
-    if _TAG_RE is None:
-        _TAG_RE = re.compile(r"<[^>]+>")
-
-    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</(p|div|tr|h[1-6]|li)>", "\n", text)
-    text = re.sub(r"(?i)<li\b[^>]*>", "  • ", text)
-    text = _TAG_RE.sub("", text)
-    text = html_mod.unescape(text)
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return "\n".join(line.rstrip() for line in text.splitlines()).strip()

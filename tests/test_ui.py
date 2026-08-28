@@ -1039,11 +1039,35 @@ def test_urls_in_a_body_become_clickable_links(ctx, service):
     assert "link https://ci.example.com/runs/42" in links
 
 
+def test_a_footnote_marker_in_the_reader_opens_its_address(ctx, service):
+    long_url = "https://c.gle/" + "A" * 140
+    service.handlers["users.threads.get"] = lambda kw: {
+        "id": kw["id"], "snippet": "s",
+        "messages": [make_message(
+            f"m{kw['id']}", thread_id=kw["id"],
+            body=f"sign in to <{long_url}>Edmingle on 27 August.",
+        )],
+    }
+    ui = build(ctx, [])
+    press(ui, "enter")
+    lines, _ = render.reader_lines(ui.state, 80)
+    marked = [
+        line.plain[span.start : span.end]
+        for line in lines
+        for span in line.spans
+        if str(span.style) == f"link {long_url}"
+    ]
+    # The marker in the sentence, and the address itself in the footnotes --
+    # the long one folds across lines, and every piece stays clickable.
+    assert "[1]" in marked
+    assert len(marked) > 1
+
+
 def test_trailing_punctuation_is_not_swallowed_into_the_url():
-    from gmcli.ui.render import _linkify
+    from gmcli.bodytext import linkify
     from rich.text import Text
 
-    text = _linkify(Text("see https://example.com/a, and https://example.com/b."))
+    text = linkify(Text("see https://example.com/a, and https://example.com/b."))
     links = {str(span.style) for span in text.spans}
     assert links == {"link https://example.com/a", "link https://example.com/b"}
 

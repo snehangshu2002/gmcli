@@ -331,7 +331,10 @@ off with `gmail ui --no-images`.
 
 URLs in a message body are emitted as OSC 8 hyperlinks, so Ghostty, Kitty,
 WezTerm, iTerm2 and modern VTE terminals make them clickable — no need to
-select and copy the address out of the pane.
+select and copy the address out of the pane. `gmail read` does the same, and a
+`[1]` standing in for a long address is a link to it, so a footnoted URL costs
+you nothing: click the marker where you found it, or the address at the bottom.
+A URL folded across two lines stays clickable on both halves.
 
 ### Reading
 
@@ -345,6 +348,25 @@ $ gmail read '#3' --latest          # just the newest message
 $ gmail read '#3' --show-quoted     # expand the quoted history
 $ gmail read '#3' --raw             # original RFC 822 source
 ```
+
+#### Mail that was written for a browser
+
+Most bulk mail — a receipt, an account notification, a newsletter — is authored
+as HTML, and the plain-text half a sender attaches beside it is usually machine
+output rather than prose: Outlook conditional-comment markers left in the text,
+every paragraph repeated once per branch of them, and each link's address glued
+onto the front of its own label.
+
+gmcli cleans that up before showing it. The markers go, the repeated blocks
+collapse to one, lines the sender hard-wrapped are rejoined so the text wraps to
+*your* width, and a URL too long to sit inside a sentence becomes a numbered
+reference with the addresses listed at the end of the message. The marker is
+itself a hyperlink, so nothing becomes harder to open by being footnoted. When the plain part is a broken flattening of
+the HTML, gmcli flattens the HTML itself instead, which keeps the sentences
+whole. Mail that arrives as HTML only is rendered the same way.
+
+`gmail read --html` shows the HTML source when you want to see it, and
+`--raw` the original message exactly as it arrived.
 
 ### Searching
 

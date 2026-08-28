@@ -22,8 +22,9 @@ from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
 
+from ..bodytext import footnote_targets, linkify, message_body
 from ..models import Message, Thread, split_quoted
-from ..output import format_date, format_size, html_to_text
+from ..output import format_date, format_size
 from .graphics import is_image
 from .state import HELP, LIST, READER, STANDARD_MAILBOXES, UIState
 
@@ -529,28 +530,20 @@ def _hang(glyph: str, line: Text) -> Text:
     return out.append_text(line)
 
 
-# Deliberately conservative: trailing punctuation is far more often sentence
-# punctuation than part of the URL.
-_URL_RE = re.compile(r"""https?://[^\s<>"'`\]\)]+[^\s<>"'`\]\).,;:!?]""")
+def _wrap(
+    text: str,
+    width: int,
+    style: str = "",
+    targets: dict[str, str] | None = None,
+) -> list[Text]:
+    """Wrap a block of text to ``width``, preserving blank lines.
 
-
-def _linkify(text: Text) -> Text:
-    """Turn URLs into OSC 8 hyperlinks the terminal can open on click.
-
-    Styling before wrapping is what makes this survive a URL that gets folded
-    across two lines — ``Text.wrap`` carries the style onto both halves, so
-    both remain clickable and both point at the whole address.
+    ``targets`` is the body's footnote table, so a ``[3]`` left in a sentence
+    opens the address listed for it at the bottom.
     """
-    for match in _URL_RE.finditer(text.plain):
-        text.stylize(f"link {match.group(0)}", match.start(), match.end())
-    return text
-
-
-def _wrap(text: str, width: int, style: str = "") -> list[Text]:
-    """Wrap a block of text to ``width``, preserving blank lines."""
     out: list[Text] = []
     for raw in (text or "").splitlines() or [""]:
-        chunk = _linkify(Text(raw.rstrip(), style=style))
+        chunk = linkify(Text(raw.rstrip(), style=style), targets)
         if not raw.strip():
             out.append(Text(""))
             continue
@@ -601,18 +594,19 @@ def _message_block(
             lines.append(head)
     lines.append(Text(""))
 
-    body = msg.body_text or (html_to_text(msg.body_html) if msg.body_html else None)
+    body = message_body(msg)
     if body is None:
         lines.append(Text("(no readable text body)", style=THEME["meta"]))
     else:
+        targets = footnote_targets(body)
         visible, quoted = split_quoted(body)
-        lines.extend(_wrap(visible, width, THEME["body"]))
+        lines.extend(_wrap(visible, width, THEME["body"], targets))
         if quoted:
             if show_quoted:
                 # Dimmer than the live text, but still a readable weight —
                 # quoted history is context you sometimes need to read, not
                 # decoration.
-                lines.extend(_wrap(quoted, width, THEME["quote"]))
+                lines.extend(_wrap(quoted, width, THEME["quote"], targets))
             else:
                 count = len(quoted.splitlines())
                 lines.append(Text(""))
