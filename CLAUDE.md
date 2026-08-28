@@ -352,9 +352,8 @@ stay consistent: `auth/flow.py:PUBLISHING_STATUS_HINT`, the `token_age` and
 3.13, `uv build`, `twine check`, then PyPI Trusted Publishing (OIDC — no token
 exists to leak). The build job fails if the tag disagrees with `__version__`,
 which is deliberate: a PyPI version number can be used exactly once, so the
-check has to happen before the upload rather than after. `RELEASING.md` is the
-setup and the checklist; `src/gmcli/__init__.py` is the only place the version
-is written.
+check has to happen before the upload rather than after. `src/gmcli/__init__.py`
+is the only place the version is written.
 
 ## Paths and configuration
 

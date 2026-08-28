@@ -647,10 +647,10 @@ $ uv run pytest
 The test suite runs entirely offline against a fake Gmail service — no test
 touches the network or a real mailbox.
 
-Releases are cut by pushing a `v*` tag: CI runs the suite, builds the sdist and
-wheel, and uploads to PyPI over Trusted Publishing, with no API token stored
-anywhere. See [RELEASING.md](RELEASING.md) for the one-time PyPI setup and the
-four commands.
+Releases are cut by pushing a `v*` tag: `.github/workflows/release.yml` runs the
+suite, builds the sdist and wheel, refuses a tag that disagrees with
+`__version__`, and uploads to PyPI over Trusted Publishing, with no API token
+stored anywhere.
 
 ## License
 

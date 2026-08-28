@@ -5,8 +5,9 @@
 # Authentication is PyPI Trusted Publishing (OIDC): GitHub mints a short-lived
 # token for this workflow and PyPI accepts it because the project is configured
 # to trust this repository. There is no API token to store, leak, or rotate —
-# which is why nothing here reads a secret. See RELEASING.md for the one-time
-# setup on the PyPI side.
+# which is why nothing here reads a secret. The one-time setup on the PyPI side
+# is a pending publisher naming this repository, this workflow, and the `pypi`
+# environment.
 
 name: Release
 
