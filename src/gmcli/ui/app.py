@@ -427,8 +427,18 @@ class MailApp:
         if outcome == "cancel":
             self.state.note("Cancelled")
             return
-        if handler is not None:
+        if handler is None:
+            return
+        try:
             handler(editor.text.strip())
+        except GmcliError as exc:
+            # Same contract as ``busy()``: a prompt handler runs on the key
+            # that submitted it, so anything escaping here would take the
+            # session down over one mistyped line.
+            detail = f"{exc.message} {exc.hint or ''}".strip()
+            self.state.note(detail, render.THEME["error"])
+        except Exception as exc:  # noqa: BLE001 — a UI must not die on one bad line
+            self.state.note(f"{type(exc).__name__}: {exc}", render.THEME["error"])
 
     def confirm(self, question: str, action: Callable[[], None]) -> None:
         """Ask for a y/n on the status line before doing something."""
@@ -1011,6 +1021,57 @@ class MailApp:
                 self.state.note(exc.message, render.THEME["warn"])
         return body
 
+    def _ask_recipients(
+        self,
+        label: str,
+        then: Callable[[list[str]], None],
+        *,
+        initial: str = "",
+        empty_note: str,
+        retry: bool = False,
+    ) -> None:
+        """Prompt for addresses, and ask again if what came back is not one.
+
+        A typo in a footer prompt is the most ordinary thing a user can do, so
+        it must cost them the typo and nothing else. ``validate_addresses``
+        raises, and a prompt handler runs on the key that submitted it — so
+        letting that escape would end the session and lose the draft. The
+        complaint goes in the *label*: while a prompt is open it is what the
+        footer shows, and the status line is not on screen to read.
+        """
+
+        def handler(text: str) -> None:
+            if not text:
+                # An empty line is how you back out, and the one case that is
+                # not a typo to correct.
+                self.state.note(empty_note, render.THEME["warn"])
+                return
+            try:
+                recipients = compose.validate_addresses(
+                    compose.split_addresses([text]), field="to"
+                )
+            except GmcliError as exc:
+                self.state.note(exc.message, render.THEME["error"])
+                recipients = []
+            if not recipients:
+                # ``split_addresses`` drops some malformed input outright
+                # rather than raising — ``bob@`` parses to nothing at all —
+                # so an empty result off a non-empty line is a typo too.
+                self._ask_recipients(
+                    label,
+                    then,
+                    initial=text,
+                    empty_note=empty_note,
+                    retry=True,
+                )
+                return
+            then(recipients)
+
+        # The complaint prefixes the label rather than replacing it, and the
+        # unprefixed label is what recurses — two typos in a row must not read
+        # "not an address — not an address — to: ".
+        self.ask(f"not an address — {label}" if retry else label, handler, initial)
+
     def _send(self, message, *, thread_id: str | None, verb: str) -> None:
         summary = compose.describe(message)
 
@@ -1052,13 +1113,7 @@ class MailApp:
         if parent is None:
             return
 
-        def with_recipients(text: str) -> None:
-            recipients = compose.validate_addresses(
-                compose.split_addresses([text]), field="to"
-            )
-            if not recipients:
-                self.state.note("No recipients — nothing forwarded", render.THEME["warn"])
-                return
+        def with_recipients(recipients: list[str]) -> None:
             body = self._edit(_header_stub(recipients, [],
                                            compose.forward_subject(parent.subject)))
             with self.busy("Building forward"):
@@ -1067,17 +1122,14 @@ class MailApp:
                 )
                 self._send(message, thread_id=None, verb="Forwarded")
 
-        self.ask("forward to: ", with_recipients)
+        self._ask_recipients(
+            "forward to: ",
+            with_recipients,
+            empty_note="No recipients — nothing forwarded",
+        )
 
     def compose_new(self) -> None:
-        def with_recipients(text: str) -> None:
-            recipients = compose.validate_addresses(
-                compose.split_addresses([text]), field="to"
-            )
-            if not recipients:
-                self.state.note("No recipients — nothing sent", render.THEME["warn"])
-                return
-
+        def with_recipients(recipients: list[str]) -> None:
             def with_subject(subject: str) -> None:
                 body = self._edit(_header_stub(recipients, [], subject))
                 if not body:
@@ -1096,7 +1148,9 @@ class MailApp:
 
             self.ask("subject: ", with_subject)
 
-        self.ask("to: ", with_recipients)
+        self._ask_recipients(
+            "to: ", with_recipients, empty_note="No recipients — nothing sent"
+        )
 
 
 def _select_attachments(

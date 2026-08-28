@@ -1526,3 +1526,77 @@ def test_the_reader_surface_reaches_the_right_hand_edge(ctx):
     press(ui, "enter")
     for line in render.reader(ui.state, 100, 25):
         assert str(render.exact(line, 100).style) == render.THEME["page"]
+
+
+# -- composing ----------------------------------------------------------------
+
+
+def test_a_mistyped_address_asks_again_instead_of_ending_the_session(ctx):
+    """The most ordinary mistake there is must cost the typo and nothing else."""
+    ui = build(ctx, [])
+    press(ui, "c")
+    type_in(ui, "snehangshubhuin2018")
+    assert ui.state.quit is False
+    assert ui.state.prompt is not None  # still asking, not gone
+    assert "not an address" in ui.state.prompt.label
+    assert "to: " in ui.state.prompt.label
+
+
+def test_two_typos_in_a_row_do_not_stack_the_complaint(ctx):
+    ui = build(ctx, [])
+    press(ui, "c")
+    type_in(ui, "nonsense")
+    type_in(ui, "still nonsense")
+    assert ui.state.prompt.label == "not an address — to: "
+
+
+def test_the_rejected_text_comes_back_to_be_edited(ctx):
+    """Re-typing a whole address to fix one missing character is a punishment."""
+    ui = build(ctx, [])
+    press(ui, "c")
+    type_in(ui, "bob@")
+    assert ui.state.prompt.text == "bob@"
+    assert ui.state.prompt.cursor == len("bob@")
+
+
+def test_a_corrected_address_carries_on_to_the_subject(ctx):
+    ui = build(ctx, [])
+    press(ui, "c")
+    type_in(ui, "nonsense")
+    type_in(ui, "bob@example.com")
+    assert ui.state.prompt is not None
+    assert ui.state.prompt.label == "subject: "
+
+
+def test_an_empty_recipient_list_abandons_rather_than_re_asking(ctx):
+    """Submitting nothing is how you back out; it is not a typo to correct."""
+    ui = build(ctx, [])
+    press(ui, "c")
+    type_in(ui, "")
+    assert ui.state.prompt is None
+    assert ui.state.status_style == render.THEME["warn"]
+    assert ui.state.quit is False
+
+
+def test_forwarding_to_a_bad_address_also_asks_again(ctx):
+    ui = build(ctx, [])
+    press(ui, "enter", "f")
+    type_in(ui, "not-an-address")
+    assert ui.state.quit is False
+    assert "forward to: " in ui.state.prompt.label
+
+
+def test_a_prompt_handler_that_raises_lands_on_the_status_line(ctx):
+    """The same contract as ``busy()``, for the keys that submit a prompt."""
+    from gmcli.errors import UsageError
+
+    ui = build(ctx, [])
+
+    def explode(_text: str) -> None:
+        raise UsageError("nope", hint="try that again")
+
+    ui.ask("thing: ", explode)
+    press(ui, "x", "enter")
+    assert ui.state.quit is False
+    assert ui.state.status_style == render.THEME["error"]
+    assert "nope" in ui.state.status
