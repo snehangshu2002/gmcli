@@ -1,0 +1,95 @@
+# Publish gmcli to PyPI when a version tag is pushed.
+#
+#   git tag -a v0.2.0 -m "gmcli 0.2.0" && git push origin v0.2.0
+#
+# Authentication is PyPI Trusted Publishing (OIDC): GitHub mints a short-lived
+# token for this workflow and PyPI accepts it because the project is configured
+# to trust this repository. There is no API token to store, leak, or rotate —
+# which is why nothing here reads a secret. See RELEASING.md for the one-time
+# setup on the PyPI side.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:  # re-run a failed publish without moving the tag
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        # The floor and the ceiling of what pyproject claims to support.
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install -e '.[dev]'
+      - name: Test
+        run: uv run pytest -q
+      - name: Lint
+        run: uvx ruff@latest check --select F,E9 src/ tests/
+
+  build:
+    name: Build sdist and wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      # A tag that disagrees with __init__.py would publish a version nobody
+      # can reproduce from the repository. Fail here, before anything is
+      # uploaded — a release on PyPI cannot be replaced, only yanked.
+      - name: Tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/gmcli/__init__.py)
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag  __version__=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match __version__ $version"
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      - name: Check metadata renders on PyPI
+        run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag publishes. A manual run of this workflow on a branch builds
+    # and tests, and stops here.
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gmcli
+    permissions:
+      id-token: write  # the OIDC token Trusted Publishing exchanges
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

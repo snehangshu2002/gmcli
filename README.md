@@ -54,6 +54,33 @@ $ pipx install gmcli     # or: uv tool install gmcli
 
 This installs a single command, `gmail`. Then run `gmail auth setup` once.
 
+### Staying up to date
+
+Once a day, in the background, gmcli asks PyPI whether there is a newer
+release. It never delays a command to do it — the answer is cached, and the
+*next* run mentions it, on stderr, in one dim line:
+
+```
+Update available: gmcli 0.1.0 → 0.2.0. Run `gmail --upgrade` to install it.
+```
+
+```console
+$ gmail --upgrade                   # install the latest release
+```
+
+`--upgrade` uses whatever installed this copy — `pipx upgrade`, `uv tool
+upgrade`, or `pip install -U` — rather than assuming pip and breaking a pipx
+shim. From a git checkout it declines and tells you to `git pull` instead.
+
+The notice never appears under `--json` or `--quiet`, and never when stderr is
+not a terminal, so nothing in a pipeline sees it. Turn the check off entirely
+with `GMCLI_NO_UPDATE_CHECK=1`, or in the config file:
+
+```toml
+[update]
+check = false
+```
+
 ## Setup
 
 ```console
@@ -524,6 +551,10 @@ max_results = 20
 [send]
 signature = "— sent from the terminal"
 
+[update]
+# Ask PyPI once a day whether a newer gmcli exists. Default: true.
+check = true
+
 # Optional: supply the OAuth client here instead of a downloaded JSON file.
 # [oauth]
 # client_id = "1234-abc.apps.googleusercontent.com"
@@ -615,6 +646,11 @@ $ uv run pytest
 
 The test suite runs entirely offline against a fake Gmail service — no test
 touches the network or a real mailbox.
+
+Releases are cut by pushing a `v*` tag: CI runs the suite, builds the sdist and
+wheel, and uploads to PyPI over Trusted Publishing, with no API token stored
+anywhere. See [RELEASING.md](RELEASING.md) for the one-time PyPI setup and the
+four commands.
 
 ## License
 

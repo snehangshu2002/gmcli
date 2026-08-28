@@ -118,11 +118,19 @@ class OAuthConfig:
 
 
 @dataclass
+class UpdateConfig:
+    """Whether gmcli may ask PyPI, once a day, if a newer release exists."""
+
+    check: bool = True
+
+
+@dataclass
 class Config:
     default_account: str | None = None
     output: OutputConfig = field(default_factory=OutputConfig)
     send: SendConfig = field(default_factory=SendConfig)
     oauth: OAuthConfig = field(default_factory=OAuthConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
     aliases: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -140,6 +148,7 @@ class Config:
         out = raw.get("output", {})
         snd = raw.get("send", {})
         oauth = raw.get("oauth", {})
+        upd = raw.get("update", {})
         return cls(
             default_account=raw.get("default_account"),
             output=OutputConfig(
@@ -154,6 +163,7 @@ class Config:
                 client_id=oauth.get("client_id"),
                 client_secret=oauth.get("client_secret"),
             ),
+            update=UpdateConfig(check=bool(upd.get("check", True))),
             aliases=dict(raw.get("aliases", {})),
         )
 
@@ -180,6 +190,8 @@ class Config:
         }
         if oauth:
             data["oauth"] = oauth
+        if not self.update.check:
+            data["update"] = {"check": False}
         if self.aliases:
             data["aliases"] = self.aliases
 

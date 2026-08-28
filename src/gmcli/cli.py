@@ -105,6 +105,52 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _upgrade_callback(value: bool) -> None:
+    """``gmail --upgrade``: fetch the current release and install it.
+
+    Eager, like ``--version``, so it runs before any account is resolved —
+    upgrading must work on a machine that has never logged in, or whose token
+    is exactly what the new version fixes.
+    """
+    if not value:
+        return
+    from . import update
+
+    # An option callback runs outside the command wrappers installed below, so
+    # it maps its own errors onto the documented exit codes.
+    try:
+        code = update.upgrade(echo=typer.echo)
+    except GmcliError as exc:
+        _report(exc)
+        raise typer.Exit(code=exc.exit_code) from exc
+    raise typer.Exit(code=code)
+
+
+def _announce_update(ctx: typer.Context) -> None:
+    """Print what yesterday's check found, then start today's.
+
+    In that order, and after the command rather than before it: the notice
+    belongs at the bottom of the output where it will not be scrolled away by
+    the thing the user actually asked for, and the check itself must not delay
+    that thing by so much as a DNS lookup.
+    """
+    from . import update
+
+    app_ctx: AppContext = ctx.obj
+    if app_ctx.json_mode or app_ctx.quiet or not update.stderr_is_terminal():
+        return
+    if not update.checks_enabled(app_ctx.config):
+        return
+    notice = update.pending_notice()
+    if notice:
+        from rich.console import Console
+
+        Console(stderr=True, highlight=False, no_color=not app_ctx.color).print(
+            f"[dim]{notice}[/dim]"
+        )
+    update.start_check(app_ctx.config)
+
+
 @app.callback()
 def main_callback(
     ctx: typer.Context,
@@ -134,6 +180,13 @@ def main_callback(
         callback=_version_callback,
         is_eager=True,
     ),
+    upgrade: bool = typer.Option(
+        None,
+        "--upgrade",
+        help="Install the latest gmcli release and exit.",
+        callback=_upgrade_callback,
+        is_eager=True,
+    ),
 ) -> None:
     """Manage Gmail from the terminal."""
     config = Config.load()
@@ -145,6 +198,9 @@ def main_callback(
         color=not no_color and "NO_COLOR" not in os.environ,
         config=config,
     )
+    # Click closes the root context after the subcommand has finished, which is
+    # exactly when a release notice should appear.
+    ctx.call_on_close(lambda: _announce_update(ctx))
 
 
 @app.command("completion")

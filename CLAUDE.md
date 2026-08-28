@@ -122,6 +122,18 @@ api/client.py   the authenticated service + retry, batching, error mapping
 
   `message_body` memoizes both conversions: the UI re-renders the reader on
   every frame, and a 60 KB HTML body is ~9 ms to parse.
+- **`update.py`** is the release check and `gmail --upgrade`. Three rules
+  shape it: it never delays a command (PyPI is asked on a daemon thread and the
+  *next* run is what mentions the result, with `atexit` giving an in-flight
+  check `JOIN_BUDGET` seconds so short offline-only commands still land one
+  eventually); it never speaks on a pipe (`--json`, `--quiet`, or a non-tty
+  stderr all silence it); and it never nags a developer (`running_from_checkout`
+  makes this repo's own `-e` install exempt). `checked_at` is stamped *before*
+  the fetch, so a machine that is offline for a week tries once a day rather
+  than once a command. `--upgrade` runs whatever installed this copy —
+  `sys.prefix` says pipx, uv, or pip — because `pip install -U` inside a pipx
+  venv is at best ignored. `fetch_latest` separates a 404 from an unreachable
+  PyPI: they need different advice.
 - **`api/client.py`** wraps every call in retry-with-backoff (429/5xx, honoring
   `Retry-After`) and maps Google exceptions onto the `errors.py` hierarchy.
   Never call `.execute()` directly — go through `client.execute()`,
@@ -333,6 +345,16 @@ expire after 7 days and surface much later as an opaque `invalid_grant`. This is
 the single most common support issue. It is handled in three places that must
 stay consistent: `auth/flow.py:PUBLISHING_STATUS_HINT`, the `token_age` and
 `refresh` checks in `gmail auth doctor`, and step 4 of the setup wizard.
+
+## Releasing
+
+`.github/workflows/release.yml` publishes on a `v*` tag: tests on 3.10 and
+3.13, `uv build`, `twine check`, then PyPI Trusted Publishing (OIDC — no token
+exists to leak). The build job fails if the tag disagrees with `__version__`,
+which is deliberate: a PyPI version number can be used exactly once, so the
+check has to happen before the upload rather than after. `RELEASING.md` is the
+setup and the checklist; `src/gmcli/__init__.py` is the only place the version
+is written.
 
 ## Paths and configuration
 

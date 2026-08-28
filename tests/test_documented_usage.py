@@ -280,3 +280,15 @@ def test_colliding_filenames_get_a_suffix_rather_than_overwriting(env, tmp_path)
     run("attachments", "download", "#1", "--name", "*.pdf", "-o", str(tmp_path))
     assert (tmp_path / "report.pdf").exists()
     assert (tmp_path / "report (1).pdf").exists()
+
+
+# -- Install: staying up to date ----------------------------------------------
+
+
+def test_the_upgrade_flag_documented_under_install(env, monkeypatch):
+    """`gmail --upgrade` — the installer itself is stubbed, the flag is not."""
+    from gmcli import update
+
+    monkeypatch.setattr(update, "upgrade", lambda **kwargs: 0)
+    result = runner.invoke(app, ["--upgrade"])
+    assert result.exit_code == 0
